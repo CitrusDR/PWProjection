@@ -1356,7 +1356,11 @@ function Hud.probe(ctx)
         local ch = Hud.CHANNELS[i]
         local ok, detail
         if ch.gate ~= nil and Config.get(ch.gate) ~= true then
-            ok, detail = false, "高风险通道默认关；要用就把配置 " .. ch.gate .. " 改成 true"
+            -- ★ 注意措辞（2026-09-28）: 这些高风险开关的默认值是 false，
+            --   而配置文件**只写和默认值不同的键** ⇒ 文件里本来就没有这一行，
+            --   所以只能说"自己加一行"，不能说"改成 true"（玩家找不到那个键）。
+            ok, detail = false, "高风险通道默认关；要用就在 pwpr_config.json 里自己加一行 \""
+                .. tostring(ch.gate) .. "\": true（该键默认不存在）"
         else
             local pok, r1, r2 = pcall(ch.probe, c)
             if not pok then

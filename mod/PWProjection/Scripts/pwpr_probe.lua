@@ -1231,7 +1231,7 @@ local UI_STEPS = {
             for i = 1, #sl do lines[#lines + 1] = sl[i] end
             lines[#lines + 1] = ""
             lines[#lines + 1] = "★ 想要游戏内文字，两步:"
-            lines[#lines + 1] = "  1) 把配置 notify_try_client_message 改成 true"
+            lines[#lines + 1] = "  1) 在 pwpr_config.json 里加一行 \"notify_try_client_message\": true（默认不存在）"
             lines[#lines + 1] = "     （或者 notify_allow_named_1arg=true 且 notify_func=<上面签名合适的函数名>）"
             lines[#lines + 1] = "  2) 回游戏再按一次 O —— 最后一步会真的发一行测试文字"
             lines[#lines + 1] = "     ★ 那一步有把游戏打崩的风险（未验证参数个数的调用），所以默认不执行。"

@@ -503,10 +503,30 @@ local function do_probe()
     Log.emit("")
     Log.emit("==================================================")
     if ready then
-        Log.emit("能力探测通过 —— 投影渲染已解锁。")
-        Log.emit("把 config 里的 ghost_enabled 改成 true，然后按 K。")
-        Notify.show("能力探测通过 —— 投影已解锁（把 ghost_enabled 改成 true 再按 F8）",
-            "probe OK: ghost unlocked")
+        -- ★★★ 2026-09-28 玩家反馈后改: 探测通过就**直接帮玩家打开**投影开关。
+        --
+        -- 为什么必须自动开（原来的做法是错的）:
+        --   配置文件的规则是"**只写和默认值不同**的键"，而 `ghost_enabled` 默认就是 false
+        --   ⇒ 文件里**根本没有这一行**。结果提示语让玩家"把 ghost_enabled 改成 true"
+        --   —— 他打开 pwpr_config.json 找不到这个键，只能猜着加一行（玩家实测反馈）。
+        --   ⇒ 探测通过本来就是"该开门"的信号，这里直接 set + save，
+        --     那一行就会**带着 true 出现在配置文件里**（想关掉随时改回 false）。
+        local prev = Config.get("ghost_enabled")
+        Config.set("ghost_enabled", true)
+        local sok, serr = Config.save()
+        if sok then
+            Log.emit("能力探测通过 —— 投影渲染已解锁，并已自动写入 ghost_enabled = true。")
+            Log.emit(string.format("（原来是 %s；想关掉就把 pwpr_config.json 里的 "
+                .. "ghost_enabled 改回 false 再按 F8）", tostring(prev)))
+            Notify.show("投影已解锁（已自动开启），按 K 放置投影",
+                "probe OK: ghost enabled automatically")
+        else
+            -- 写配置失败极少见（磁盘只读等），这时才退回"手动加一行"的说法
+            Log.emit("!! 能力探测通过，但自动写配置失败: " .. tostring(serr))
+            Log.emit("   请手动在 pwpr_config.json 里加一行: \"ghost_enabled\": true")
+            Notify.show("投影已解锁，但自动保存配置失败（看日志）",
+                "probe OK: auto-enable failed", "error")
+        end
     else
         Log.emit("能力探测未全部通过。缺少: " .. table.concat(missing, ", "))
         Log.emit("请把 pwpr_probe.txt 发出来。")
@@ -658,14 +678,14 @@ local function do_ghost_toggle()
         Log.emit("")
         Log.emit("投影渲染需要先通过能力探测（阶段 S3）。步骤:")
         Log.emit("  1) 站进世界，等画面稳定")
-        Log.emit("  2) 按 N 跑探测")
-        Log.emit("  3) 探测通过后，把 config 里 ghost_enabled 改成 true")
-        Log.emit("  4) 按 F8 重载配置（不用重启游戏）")
-        Log.emit("  5) 再按 K")
+        Log.emit("  2) 按 N 跑探测 —— **通过后会自动打开投影开关**（写入 ghost_enabled = true）")
+        Log.emit("  3) 再按 K 就能放投影")
         Log.emit("")
-        Log.emit("config 文件: " .. tostring(Config.path))
-        Notify.show("投影没解锁: 先按 N 探测，再把 ghost_enabled 改成 true 后按 F8",
-            "ghost locked: run probe (N) then enable ghost_enabled", "error")
+        Log.emit("（如果探测通过但这里仍然锁着，说明你自己把 ghost_enabled 设成了 false：")
+        Log.emit("  要么在 " .. tostring(Config.path) .. " 里删掉那一行（= 用默认值），")
+        Log.emit("  要么改成 true，然后按 F8 重载。）")
+        Notify.show("投影没解锁: 先按 N 做能力探测（通过后会自动开启）",
+            "ghost locked: run probe (N); it auto-enables", "error")
         flush_log()
         return
     end
@@ -959,7 +979,8 @@ local function do_reload_config()
     elseif not gok then
         Log.emit("门禁未过 —— 先按 N 跑能力探测。")
     else
-        Log.emit("把 config 里的 ghost_enabled 改成 true，再按一次 F8。")
+        Log.emit("门禁已过，但总开关是关的（ghost_enabled = false）:")
+        Log.emit("  在 " .. tostring(Config.path) .. " 里把它改成 true（或删掉那一行），再按 F8。")
     end
     flush_log()
 
