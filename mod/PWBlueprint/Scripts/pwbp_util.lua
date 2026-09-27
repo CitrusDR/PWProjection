@@ -175,17 +175,24 @@ end
 --- 严格地找一个 PlayerController（不依赖会撒谎的 IsValid）。
 --- 先用 FindAllOf + Util.valid（本项目的严格判据），UEHelpers 只当兜底。
 function Util.find_pc_strict()
-    -- ★★ 必须是**确定性**的: 世界里可能有多个 PlayerController，
-    --   而"取第一个通过校验的"在不同时刻可能挑到不同的那个 ——
-    --   这会让"用 PC 地址当世代标记"变得不稳定（实测踩过这个坑）。
-    --   所以: 优先 IsLocalPlayerController() 为真的那个；
-    --         仍有多个就按全名排序取最小的（排序是确定性的）。
+    -- ★★ 实测（2026-09-28 玩家日志）: 世界里存在**多个** PlayerController，
+    --   `FindAllOf("PlayerController")` 的返回顺序不定，而且
+    --   `IsLocalPlayerController` 在 UE4SS 里**取不到**（调不通）——
+    --   所以"取第一个"会每次拿到不同的那个。
+    --   ⇒ 判据换成**"这个 PC 有没有 Pawn"**（只有玩家自己的那个才有），
+    --     并按全名排序做确定性兜底。这个函数只用于"拿一个能用的 PC / 它所在的世界"，
+    --     **不要**用它派生"世代标记"（那已经被证明不可靠，见 pwbp_ghost.stale_world）。
     local best, best_name = nil, nil
     local ok, list = pcall(function() return FindAllOf("PlayerController") end)
     if ok and type(list) == "table" then
         for i = 1, #list do
             local v = Util.unwrap(list[i])
             if Util.valid(v) then
+                local has_pawn = false
+                pcall(function()
+                    local pawn = v.Pawn
+                    has_pawn = (pawn ~= nil) and Util.valid(Util.unwrap(pawn))
+                end)
                 local local_ok = false
                 pcall(function()
                     if v.IsLocalPlayerController ~= nil then
@@ -194,13 +201,20 @@ function Util.find_pc_strict()
                 end)
                 local fn = Util.full_name(v)
                 if type(fn) ~= "string" then fn = tostring(v) end
-                if local_ok then
-                    if best == nil or (best_name ~= nil and fn < best_name) then
+                local rank = 0
+                if has_pawn then rank = 2 elseif local_ok then rank = 1 end
+                if best == nil then
+                    best, best_name = v, fn
+                elseif rank > 0 then
+                    -- 有 Pawn / 被判定为本机 PC 的优先；同档按名字取最小的（确定性）
+                    local best_rank = 0
+                    pcall(function()
+                        local bp = best.Pawn
+                        if (bp ~= nil) and Util.valid(Util.unwrap(bp)) then best_rank = 2 end
+                    end)
+                    if rank > best_rank or (rank == best_rank and fn < best_name) then
                         best, best_name = v, fn
                     end
-                elseif best == nil then
-                    -- 只在"还没有本机 PC"时把它当候选
-                    best, best_name = v, fn
                 end
             end
         end

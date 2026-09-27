@@ -105,6 +105,8 @@ function BP.build(records, opts)
     -- 4) 装配
     local buildings = {}
     local type_counts, type_mesh = {}, {}
+    -- ★ 2026-09-28: 同时统计"完整路径"的覆盖情况（换存档投影是否完整看这个）
+    local type_mesh_path, with_path = {}, 0
     local layer_count, layer_zmin, layer_zmax = {}, {}, {}
     local with_mesh = 0
 
@@ -125,6 +127,36 @@ function BP.build(records, opts)
             b.mesh = r.mesh
             with_mesh = with_mesh + 1
             if type_mesh[b.t] == nil then type_mesh[b.t] = r.mesh end
+        end
+        -- ★★★ 2026-09-28: 把网格的**完整资产路径**也写进蓝图。
+        --
+        -- 为什么必须写（玩家反馈: "换一个存档投影就缺件，那这模组就没意义了"）:
+        --   蓝图原来只存【短名】（如 `SM_Floor_Wood`），投影时靠
+        --   "短名 → 路径"的注册表去查 —— 而那张表是用 `FindAllOf("StaticMesh")`
+        --   建的，**只包含当前世界里已经加载的资产**。
+        --   在【采集的那个存档】里，那些建筑都在场，资产自然全加载（能解析）；
+        --   换到【另一个存档】，蓝图里的大量资产根本没被加载 → 查不到 → 跳过不画
+        --   ⇒ 表现就是"投影缺件"。
+        --   ⇒ 采集时我们**本来就知道完整路径**（从 actor 的网格组件上读到的全名），
+        --     把它存下来，投影时直接 `LoadAsset(路径)` —— 与"当前加载了什么"无关。
+        --   （旧蓝图没有这个字段，仍然走原来的短名解析 → 缺件的老蓝图建议重采一次。）
+        --
+        -- ★★★ 2026-09-28 第二个坑（这个 bug 让上面那套修复**完全没生效**）:
+        --   `Util.full_name()` 返回的是 **"StaticMesh /Game/Pal/.../X.X"** ——
+        --   **带类名前缀**（日志里每行 `全名=StaticMesh /Game/...` 都是这个格式）。
+        --   我原来写的是 `r.mesh_path:sub(1,1) == "/"`，首字符其实是 `S`
+        --   ⇒ **每一条记录都被挡掉**，蓝图里一个 `mesh_path` 都没有
+        --   （玩家重采了很多次也没用，因为问题不在采集，在这行判断）。
+        --   ⇒ 正确做法: 先把 `/` 之后的部分抠出来，再用它当路径。
+        if type(r.mesh_path) == "string" then
+            local only = r.mesh_path:match("(/.*)$")   -- 去掉 "StaticMesh " 之类的前缀
+            if only ~= nil and only:find("/Game/", 1, true) ~= nil then
+                b.mesh_path = only
+                with_path = with_path + 1
+                if type_mesh_path[b.t] == nil then
+                    type_mesh_path[b.t] = only
+                end
+            end
         end
         buildings[i] = b
 
@@ -177,7 +209,15 @@ function BP.build(records, opts)
                 z = Util.round((maxz - minz) / 100.0, 3),
             },
             layerGapCm = gap_cm,
-            meshCoverage = { withMesh = with_mesh, total = #buildings },
+            meshCoverage = { withMesh = with_mesh, withPath = with_path, total = #buildings },
+            -- ★ 自检（2026-09-28 加）: 有网格名、却一个完整路径都没写出来 ——
+            --   这正是那个 bug 的样子（`Util.full_name` 带 "StaticMesh " 前缀，
+            --   而我按"首字符是 /"去判断 ⇒ 全部被挡掉 ⇒ 蓝图没有 mesh_path
+            --   ⇒ 换存档投影缺件，而且**采集日志一切正常**，很难发现）。
+            --   有了这一行，下次同样的毛病会在采集当场就喊出来。
+            meshPathWarn = (with_mesh > 0 and with_path == 0)
+                and "读了网格名但没写出任何 mesh_path —— 路径提取逻辑可能失效（跨存档投影会缺件）"
+                or nil,
         },
         stats = { types = types, layers = layers },
         buildings = buildings,

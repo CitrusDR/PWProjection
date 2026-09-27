@@ -91,16 +91,32 @@ function Capture.mesh_short_name(comp, diag)
         if d and d.reason == nil then d.reason = "没有可用的 Mesh 组件" end
         return nil
     end
+    -- ★ 细跟踪（崩溃排查用）: 只进文件、不刷控制台（调用方负责刷盘）
+    local function tr(s)
+        if Log ~= nil then Log.line("[cap/name] " .. tostring(s)) end
+    end
+    tr("开始 comp=" .. tostring(Util.full_name(comp)))
     if d then d.valid_comp = Util.valid(comp) end
 
     local ok_m, asset = pcall(function() return comp.StaticMesh end)
     if not ok_m or asset == nil then
         if d then d.reason = "组件存在，但 StaticMesh 为空" end
+        tr("StaticMesh 为空（或读取失败）-> 返回 nil")
         return nil
     end
+    -- ★★★ 2026-09-28: 玩家在【旧存档】里按 Y 崩，崩点就在下面两行 ——
+    --   它们会去**碰那个网格资产指针**:
+    --       Util.valid(asset)      → IsValid（要解引用对象）
+    --       Util.full_name(asset)  → GetFullName（同样要解引用）
+    --   老存档里可能存着"游戏更新后已被删除"的网格资源 ⇒ 那是**指向已释放内存的野指针**，
+    --   碰它就是 EXCEPTION_ACCESS_VIOLATION（版本差异导致的典型表现）。
+    --   先打标记再落盘: 崩了也能分清是"读到指针就崩"还是"指针能用、只是名字读不出来"。
+    tr("StaticMesh 指针已读到（下一步会碰它）")
     if d then d.valid_asset = Util.valid(asset) end
+    tr("Util.valid(asset) 通过")
 
     local a_full = Util.full_name(asset)
+    tr("GetFullName 返回=" .. tostring(a_full))
     if a_full == nil then
         if d then d.reason = "StaticMesh 读到了但 GetFullName 不通（疑似占位对象）" end
         return nil
@@ -257,12 +273,85 @@ function Capture.read_one(obj, diag)
         x = x, y = y, z = z,
         yaw = yaw,
         mesh = Capture.mesh_short_name(comp, diag),
+        -- ★★★ 2026-09-28: 同时把**完整资产路径**带出去（写进蓝图）。
+        --   投影端靠它 `LoadAsset(路径)`，不再依赖"当前世界里加载了什么资产" ——
+        --   这是"换存档投影缺件"的根治办法。见 pwbp_bp.lua 里的长注释。
+        mesh_path = (diag ~= nil) and diag.mesh_full or nil,
     }
 end
 
 -- --------------------------------------------------------------------------
 -- 扫描
 -- --------------------------------------------------------------------------
+
+--- 判断"这个类的继承链里有没有 wanted 这个名字"。
+---
+--- ★ 不用 `obj:IsA(...)`（UE4SS 对这个方法的暴露情况没验证过），
+---   改成**读属性**走继承链: `UClass.SuperStruct` 是 UPROPERTY，读到的是父类，
+---   一路向上比名字 —— 全程只读属性，不调方法，最稳。
+local function class_chain_has(cls, wanted)
+    for _ = 1, 12 do
+        if cls == nil then return false end
+        local fn = Util.full_name(cls)
+        if type(fn) == "string" and fn:find(wanted, 1, true) ~= nil then
+            return true
+        end
+        local sup = nil
+        pcall(function() sup = cls.SuperStruct end)
+        sup = Util.unwrap(sup)
+        if sup == nil then return false end
+        cls = sup
+    end
+    return false
+end
+
+--- 列出【当前关卡里】的建筑 Actor。
+---
+--- ★★★ 为什么不用 `FindAllOf("PalBuildObject")`（见 scan 里的长注释）:
+---   它走全局对象表，而刚销毁的世界会留下大批死对象 ⇒ 遍历时解引用它们 = 崩。
+---   `world.PersistentLevel.Actors` 是引擎维护的"本关卡活着的 Actor"数组，只含活对象。
+---
+--- 返回 objs, 来源说明；失败返回 nil, 原因
+function Capture.list_build_actors()
+    local out = {}
+    local w = Util.find_world()
+    local level = nil
+    if w ~= nil then
+        pcall(function() level = w.PersistentLevel end)
+    end
+    level = Util.unwrap(level)
+
+    local actors = nil
+    if level ~= nil then
+        pcall(function() actors = level.Actors end)
+    end
+    if type(actors) == "table" and #actors > 0 then
+        for i = 1, #actors do
+            local a = Util.unwrap(actors[i])
+            if a ~= nil then
+                local cls = nil
+                pcall(function() cls = a:GetClass() end)
+                cls = Util.unwrap(cls)
+                if class_chain_has(cls, Capture.ACTOR_CLASS) then
+                    out[#out + 1] = a
+                end
+            end
+        end
+        if #out > 0 then
+            return out, string.format("PersistentLevel.Actors（关卡共 %d 个 Actor）",
+                #actors)
+        end
+        return out, string.format("PersistentLevel.Actors（关卡共 %d 个 Actor，其中没有建筑）",
+            #actors)
+    end
+
+    -- 兜底: 老办法（全局对象表）。只有拿不到关卡列表时才走这里。
+    local ok, objs = pcall(function() return FindAllOf(Capture.ACTOR_CLASS) end)
+    if ok and type(objs) == "table" then
+        return objs, "FindAllOf（全局表，可能含上个世界的死对象）"
+    end
+    return nil, "拿不到关卡 Actor 列表，FindAllOf 也失败"
+end
 
 --- filter: { mode = "all" | "sphere", cx, cy, cz, radius_cm }
 --- 返回 records, info
@@ -275,17 +364,25 @@ function Capture.scan(filter, progress)
     }
     local records = {}
 
-    -- 用闭包而不是 pcall(FindAllOf, ...)：虽然这个写法实测可用，
-    -- 但"把原生函数直接交给 pcall"这个模式本身就是 StaticFindObject
-    -- 崩溃的成因，统一封死。
-    local ok, objs = pcall(function() return FindAllOf(Capture.ACTOR_CLASS) end)
-    if not ok then
-        info.list_error = "FindAllOf 抛错"
+    -- ★★★ 2026-09-28: 枚举方式换了 —— **不再直接走全局对象表**。
+    --
+    -- 玩家实测的规律（很关键）:
+    --   新存档 → 回标题 → 旧存档（大基地，2454 个 actor）→ 回标题 → 新存档 → 按 Y → **崩**。
+    --   而日志显示: `==== 采集 ====` 之后**连一条 [scan] 都没打出来**就崩了 ——
+    --   说明崩在**枚举本身**（或最前面几个对象上）。
+    -- 机制: `FindAllOf` 会遍历**全局对象表**并对每个对象解引用它的类来判断继承；
+    --   而刚被销毁的那个世界留下了大批**已释放的对象**，遍历到它们就是访问违例。
+    --   ⇒ 改用 **当前关卡自己的 Actor 列表** `world.PersistentLevel.Actors`：
+    --     那是引擎维护的"本关卡活着的 Actor"数组，里面不会有死对象。
+    local objs, src = Capture.list_build_actors()
+    if objs == nil then
+        info.list_error = tostring(src)
         return records, info
     end
-    if type(objs) ~= "table" then
-        info.list_error = "FindAllOf 没返回表"
-        return records, info
+    if Log ~= nil then
+        Log.emit(string.format("  [scan] 枚举到 %d 个建筑（来源: %s）",
+            #objs, tostring(src)))
+        Log.flush()
     end
     info.total = #objs
 
@@ -306,6 +403,20 @@ function Capture.scan(filter, progress)
     Capture.index_comp = {}
     for i = 1, #objs do
         local diag = {}
+        -- ★★★ 2026-09-28: 逐个对象写一行"正在处理谁"（只进文件、每 25 个刷一次盘）。
+        --   玩家在【旧存档】里按 Y 崩过 —— 崩点在扫描过程中，而这行能直接指出
+        --   **崩在哪一个建筑上**（老存档里可能有"游戏更新后已删除"的网格资源，
+        --   碰它的指针就是野指针访问）。
+        --   代价: 2454 个对象 × 1 行 ≈ 日志多 2454 行，可接受（只进文件不刷控制台）。
+        if Log ~= nil then
+            local okn, nm = pcall(function() return Util.full_name(objs[i]) end)
+            Log.line(string.format("  [scan] %d/%d %s", i, #objs,
+                (okn and type(nm) == "string") and nm or "（名字读不到）"))
+            -- ★ 前 50 个逐个刷盘（崩点通常在最前面几个），之后每 25 个刷一次。
+            --   教训: 上一次崩在"第 1~24 个对象"，而我只在 25 的倍数刷盘，
+            --   结果那几行全被缓冲吞掉、什么也没留下来 ⇒ 这次改成一开始就逐个落盘。
+            if i <= 50 or (i % 25) == 0 then Log.flush() end
+        end
         local rec, why = Capture.read_one(objs[i], diag)
         if rec == nil then
             if why == "no_position" then

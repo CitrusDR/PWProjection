@@ -169,6 +169,15 @@
     "以下类型注册表里找不到可辩护的候选": "OilPump02, AncientEnergyGenerator, BaseCampWorkerExtraStation, BaseCampItemDispenser, AncientMultiProduct, DefenseWait, WeaponFactory_Dirty_4, TableDresser01_Stone, DisplayCharacter, Factory_Hard_4, AncientRelicRecycler, BaseCampWorkHard_03(名字像 SurveillanceTableAncient), IceCrusher, FlourMill, CharacterSkinChange, CharacterRankUp, SphereFactory_Black_04"
   },
 
+  "_group_13": "【第十三组】2026-09-28 从【旧存档】的 pwbp_meshes.txt 反查得到（那一节是脚本自动从游戏组件算出来的，不是推测）。它们的 actor 网格【读不出名字】（占位对象），所以以前只能靠名字匹配 —— 结果伐木场直接不画、采石场被猜成别的形状。",
+  "_group_13_note": "伐木场/采石场在游戏里是【多件拼装】(Tree+Fence+Acce / RockA+B+C+Fence)：这里只给了【主件】的单网格近似 —— 完整拼装要等待办 3（组件的相对变换）。看着不对就改 pwbp_meshmap.json。",
+  "StationDeforest2": "/Game/Pal/Model/Prop/Architecture/Loggingcamp/SM_Loggingcamp_Tree.SM_Loggingcamp_Tree",
+  "StonePit":         "/Game/Pal/Model/Prop/Architecture/StonePit/SM_StonePit_SM_StonePit_RockA.SM_StonePit_SM_StonePit_RockA",
+  "CopperPit_2":      "/Game/Pal/Model/Prop/Architecture/StonePitLarge/SM_StonePitLarge.SM_StonePitLarge",
+  "CoalPit":          "/Game/Pal/Model/Prop/Resource/Rock/SM_RockCoal.SM_RockCoal",
+  "SulfurPit":        "/Game/Pal/Model/Prop/Resource/Rock/SM_RockSulfur.SM_RockSulfur",
+  "Crusher":          "/Game/Pal/Model/Prop/Architecture/Pulverizer/SK_Pulverizer.SK_Pulverizer",
+
   "_how_to_add": "想自己加/改映射，不要改这个文件（部署时会覆盖）—— 改 pwbp_meshmap.json。以下划线开头的键会被忽略，可以当注释用。",
   "_user_file": "pwbp_meshmap.json",
   "__end__": ""

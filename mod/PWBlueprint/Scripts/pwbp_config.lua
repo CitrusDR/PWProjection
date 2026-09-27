@@ -4,6 +4,23 @@
   配置放在 Mods\PWBlueprint\Scripts\pwbp_config.json。
   每次启动读一次；热键改配置后立刻回写，不需要重启游戏。
 
+  ★★★ 改这个文件（DEFAULTS / 分组 / 迁移）时必须遵守的规矩（2026-09-28 定）:
+    1. **改了某个键的默认值** ⇒
+       · 在 `CONFIG_VERSION` 上加一版，并在 `MIGRATIONS` 里把老配置里的旧值改成新语义
+         —— 否则老玩家的文件里那份旧值会**永远压住**新默认值（这个坑踩过 4 次）；
+       · 在键的注释里写明"什么时候改的、为什么"。
+    2. **新增参数** ⇒ ① 在 DEFAULTS 里加（带"为什么需要/什么时候该改"的注释）；
+       ② 在 `Config.KEY_GROUP` 里分组（新参数一律是 **1 = 正在起作用**）；
+       ③ 写进 `docs\配置说明.md` 对应文件 + 对应分组下；④ 跑 `tools\check_config_doc.py`。
+    3. **修改某个参数的语义** ⇒ 改代码里的注释 + 改 `docs\配置说明.md`（含默认值）。
+    4. **作废某个参数** ⇒ **不要删键**（老配置文件里还有它，删了会报错或被当成未知键）：
+       · 保持键存在、把默认值留原样；
+       · 在 DEFAULTS 的注释里标 `【已不生效】`/`【已废弃】`/`【永久禁用】` 和原因；
+       · 在 `Config.KEY_GROUP` 里归到 **3 = 历史/探索期遗留**；
+       · 在 `docs\配置说明.md` 的 1.3 节加一行（曾经用途 + 现在被谁取代）。
+    5. 判断依据: 检查器 `tools\check_config_doc.py` 会强制"每个键都在文档里"
+       + "每个配置文件都被文档点名"，全绿才算改完。
+
   重要安全项:
     ghost_enabled   默认 false。投影渲染会"创建对象"，在能力探测（S3）
                     证明每个原语可用之前，这个开关即使打开也不会生效。
@@ -57,7 +74,12 @@ Config.migrated = nil      -- 本次读取是否做了默认值迁移
 ---            以后改默认值就不用再写迁移了（文件里没写 = 跟着默认值走）。
 ---          迁移只改"值恰好等于旧默认值"的那些 —— 玩家自己改过的不动。
 ---   6 -> 7: hud_seconds 4 -> 10 秒（玩家反馈 4 秒太短，采集卡一下就没时间看了）。
-local CONFIG_VERSION = 7
+---   7 -> 8: hook_load_map_pre false -> **true**。
+---          ★ 它现在是"回标题 → 重进世界 → 闪退"的正解（引擎给的权威换地图信号）；
+---            关掉它那个闪退就会回来。老文件里被 save-all 写成了 false，必须迁移。
+---          同时把"轮询世界标记"降级成**纯诊断**（它抖动时曾把正常放置搞坏:
+---            每次 0 件）—— 销毁动作只由这个钩子做。
+local CONFIG_VERSION = 8
 
 local DEFAULTS = {
     config_version     = CONFIG_VERSION,
@@ -69,6 +91,16 @@ local DEFAULTS = {
 
     -- ---- 蓝图库 ----
     blueprint_dir      = "",      -- 留空 = <mod>\blueprints
+
+    -- 采集出来的蓝图文件名要不要带【易读的采集时间】。
+    --
+    -- true  = `base_-1620_-609_2026-09-28_1430.blueprint.json`
+    --         ⇒ 每次采集都是新文件（**不覆盖**），能区分"哪份是哪次采的"；
+    --         代价: 同一基地反复采集会攒下多个文件，按 J 切换时会逐个经过。
+    -- false = `base_-1620_-609.blueprint.json`（按基地名覆盖，只留最新一份）
+    --
+    -- ★ 2026-09-28 玩家要求加的（起因: 他重采多次却分不清哪份是新的）。
+    blueprint_name_with_time = true,
 
     -- ---- 投影（默认关闭，受能力探测门禁）----
     ghost_enabled      = false,
@@ -196,23 +228,16 @@ local DEFAULTS = {
     --   默认 **false**: 它们的使命已经完成（证明了"控件属性问不出在不在屏幕上"、
     --   "同一段字可能有多份拷贝"），不该每次按 O 都去动游戏的 UI。
     probe_marker_test         = false,
-    -- ★★★ 世代守卫（"回标题 → 重进世界"相关的保护）总开关。**默认关。**
+    -- 世代守卫（"回标题 → 重进世界"的**轮询**保护）。**已废弃，保留只为兼容旧配置。**
     --
-    -- 为什么默认关（2026-09-28 玩家反馈后的决定）:
-    --   为了修"重进世界后第一次按键崩溃"，我加了一套"世界世代标记"守卫，
-    --   结果标记本身不稳定 ⇒ 刚建好的投影被自己判成"换世界"整个丢掉
-    --   （日志: `[ghost] 已丢弃引用: apply_transform: 世界已切换` → 组件=0 → "0 件"），
-    --   通知控件也每次重建 ⇒ 旧提示堆在屏幕上。
-    --   ⇒ 玩家要求**先退回原来能用的状态**，这个 bug 单独慢慢修。
-    --
-    -- 现在怎么用这个开关:
-    --   · false（默认）= 完全按老行为走: 不比对世代、不自动丢引用 ⇒ 功能稳定；
-    --     代价: "回标题 → 重进世界"后第一次发提示/放置仍可能崩（老 bug）。
-    --   · true = 打开守卫（给"单独修这个 bug"时用: 打开后只需要复现重进场景，
-    --     不影响其他功能）。
-    --
-    -- 彻底修好之前，建议的安全用法: 回标题后**重启游戏**再进世界；
-    -- 或者把 notify_own_widget 改成 false（只走控制台、完全不碰 UI 控件）。
+    -- 演进（三条都值得记住）:
+    --   ① 完全没有保护 → 重进世界后复用了上个世界的废控件 → 闪退；
+    --   ② 改成"轮询世界标记，不符就丢引用重建" → 标记抖动时把**刚建好的投影**
+    --      整个丢掉（日志 `apply_transform: 世界已切换` → 组件=0 → 玩家看到"每次 0 件"），
+    --      通知控件也反复重建 ⇒ 旧提示堆屏；
+    --   ③ **最终方案**: 权威信号交给下面的 `hook_load_map_pre`
+    --      （引擎自己说"要换地图了"，绝不抖动）；轮询标记降级成**纯诊断**
+    --      （只写一行日志、不做任何销毁），因此这个开关**不再影响行为**。
     world_guard_enabled       = false,
     -- 借用路线的筛选: 控件全名里包含这个字符串。
     -- ★ 只会匹配【活实例】（在 /Engine/Transient 下的），CDO 一律忽略。
@@ -242,7 +267,14 @@ local DEFAULTS = {
     -- 但"在世界加载时注册/触发任何额外钩子"本身是不必要的风险敞口 ——
     -- 现在投影还没解锁，这个钩子暂时没有任何收益。
     -- 所以默认关闭，等真正需要跨世界保持引用时再打开。
-    hook_load_map_pre  = false,   -- LoadMapPre 时丢弃引用（换取"不碰引擎"）
+    -- LoadMapPre 时丢弃跨世界引用（只碰 Lua 状态，不碰引擎）。
+    --
+    -- ★★★ 2026-09-28 默认改成 **true** —— 它是"回标题 → 重进世界 → 闪退"的正解:
+    --   引擎自己告诉你"要换地图了"是最可靠的信号（轮询世界标记会抖动，
+    --   依它做销毁动作曾把正常放置搞坏: 每次 0 件）。
+    --   回调里**一个引擎接口都不调**（只清 Lua 引用），所以"加载期出问题"的风险不存在。
+    --   关掉它 = 那个闪退会回来。
+    hook_load_map_pre  = true,
 
     -- 启动时用 io.popen 扫蓝图目录 = 在游戏启动期 spawn 一个 cmd.exe。
     -- 没必要。索引文件由 Library.save 自动维护，默认不扫。
@@ -391,6 +423,14 @@ function Config.load(script_dir)
             notes[#notes + 1] = string.format("hud_seconds: 4 -> %s（4 秒太短，已加长）",
                 tostring(DEFAULTS.hud_seconds))
         end
+        -- v7 -> v8: LoadMapPre 钩子默认开启（它是跨世界闪退的正解）
+        if ver < 8 and Config.values.hook_load_map_pre ~= true then
+            local old_hook = Config.values.hook_load_map_pre
+            Config.values.hook_load_map_pre = true
+            notes[#notes + 1] = string.format(
+                "hook_load_map_pre: %s -> true（★它是「回标题→重进世界」闪退的正解）",
+                tostring(old_hook))
+        end
         Config.values.config_version = CONFIG_VERSION
         Config.migrated = table.concat(notes, "; ")
         pcall(Config.save)
@@ -401,6 +441,67 @@ function Config.load(script_dir)
     end
 
     return Config.values, string.format("配置: %d 项生效, %d 项忽略", n_ok, n_bad)
+end
+
+--- 每个配置键属于哪一组 —— **决定写进配置文件时的顺序**，也决定文档里的归类。
+---
+--- 为什么要有这个（玩家 2026-09-28 要求）:
+---   开发过程中攒下了大量"探索期临时开关"和"已经废掉的通道"，它们和真正在用的
+---   配置混在一起，打开文件根本分不清哪个还有用 ⇒ 现在按三组写:
+---     1 = 现在正在起作用（正常使用，别动）
+---     2 = 诊断 / 探测（平时保持默认，排查时才打开）
+---     3 = 历史 / 探索期遗留（**已不生效**或**永久禁用**；保留只为兼容旧配置）
+---   ⚠️ 分组只影响"写出来的顺序和标题"，不影响功能。
+Config.GROUP_TITLE = {
+    [1] = "一、现在正在起作用（正常使用，别动）",
+    [2] = "二、诊断 / 探测（平时保持默认，排查时才打开）",
+    [3] = "三、历史 / 探索期遗留（已不生效或永久禁用，保留只为兼容旧配置）",
+}
+Config.KEY_GROUP = {
+    -- ---- ① 现在正在起作用 ----
+    capture_radius_m = 1, capture_max = 1, layer_gap_cm = 1, origin_snap_m = 1,
+    blueprint_dir = 1, blueprint_name_with_time = 1,
+    ghost_enabled = 1, ghost_max_instances = 1, ghost_material = 1,
+    player_feet_offset_cm = 1,
+    nudge_step_cm = 1, rotate_step_deg = 1,
+    hud_enabled = 1, hud_seconds = 1, notify_channel = 1, notify_min_interval = 1,
+    notify_try_notice_text = 1, notify_own_widget = 1, notify_widget_class_path = 1,
+    notify_widget_class_name = 1, notify_widget_text_child = 1,
+    notify_style_retry_s = 1, notify_autohide = 1,
+    hook_load_map_pre = 1,
+
+    -- ---- ② 诊断 / 探测 ----
+    probe_max_step = 2, probe_overlay_test = 2, probe_marker_test = 2,
+    notify_probe_grep = 2, notify_send_telemetry = 2, notify_scan_in_send = 2,
+    notify_textblock_cache_s = 2, library_scan_on_refresh = 2,
+
+    -- ---- ③ 历史 / 探索期遗留 ----
+    --   前四个是"被后来实现取代"的键（代码里已经没有任何地方读它们）:
+    ghost_layer_mode = 3,      -- 【已不生效】分层状态现在在 Session.layer_mode（按 L 切）
+    ghost_layer_index = 3,     -- 【已不生效】同上
+    ghost_show_on_top = 3,     -- 【已不生效】被 ghost_material（Highlight 材质）取代
+    height_step_cm = 3,        -- 【已不生效】高度微调现在用 nudge/rotate 的步长
+    verbose = 3,               -- 【已不生效】日志一直是详细模式，没接过这个开关
+    --   下面这些是"探索期试过、后来放弃或永久禁用"的通道:
+    world_guard_enabled = 3,        -- 【废弃】轮询世代守卫（会把刚建好的投影丢掉，见踩坑记录 §25）
+    notify_allow_borrow = 3,        -- 【放弃】借用游戏自己的文本框那条路线（自建控件已走通）
+    notify_textblock_filter = 3,    -- 【放弃】上面那条路线的筛选条件
+    notify_error_class_name = 3,    -- 【放弃】第二套"出错样式"控件（颜色没法自定义，不值得维护）
+    notify_error_text_child = 3,    -- 【放弃】同上
+    notify_allow_named_1arg = 3,    -- 【探索】按名字调单参数 notify 函数（未验证写法）
+    notify_func = 3,                -- 【探索】同上要调的函数名
+    notify_try_client_message = 3,  -- 【永久禁用】调 pc:ClientMessage 必闪退（见 AGENTS 禁用接口表）
+}
+
+--- 自检: 每个 DEFAULTS 键都必须有分组（漏了会写进"第 1 组"，但更该被发现）
+function Config.check_groups()
+    local missing = {}
+    for k in pairs(DEFAULTS) do
+        if k ~= "config_version" and Config.KEY_GROUP[k] == nil then
+            missing[#missing + 1] = k
+        end
+    end
+    return missing
 end
 
 function Config.save()
@@ -426,9 +527,36 @@ function Config.save()
             end
         end
     end
-    out.config_version = CONFIG_VERSION
-    local text = Json.encode(out, true)
-    return Util.write_file(Config.path, text .. "\n", true)
+
+    -- ★★★ 2026-09-28 玩家要求: 写文件时**按组排列**，正在起作用的在最上面，
+    --   探索期/历史遗留的放下面（带分组标题）。JSON 不支持注释，所以标题用
+    --   `_section_N` 这种下划线键表示 —— 加载时会当普通未知键忽略，不影响功能。
+    local buckets = { {}, {}, {} }
+    for k in pairs(out) do
+        local g = Config.KEY_GROUP[k] or 1
+        buckets[g][#buckets[g] + 1] = k
+    end
+    local lines = { "{" }
+    lines[#lines + 1] = '  "_readme": '
+        .. Json.encode("PWBlueprint 配置 —— 只有【和默认值不同】的键会出现在这里；"
+        .. "没有的键 = 用代码里的默认值。改完在游戏里按 F8 即时生效。"
+        .. "下划线开头的键是说明/分组标题，会被忽略。", false) .. ","
+    for g = 1, 3 do
+        table.sort(buckets[g])
+        lines[#lines + 1] = string.format("  %s: %s,",
+            Json.encode("_section_" .. g, false),
+            Json.encode(Config.GROUP_TITLE[g], false))
+        for bi = 1, #buckets[g] do
+            local k = buckets[g][bi]
+            local ok, val = pcall(function() return Json.encode(out[k], false) end)
+            lines[#lines + 1] = string.format("  %s: %s,",
+                Json.encode(k, false), ok and val or "null")
+        end
+    end
+    lines[#lines + 1] = string.format('  "config_version": %d', CONFIG_VERSION)
+    lines[#lines + 1] = "}"
+    local text = table.concat(lines, "\r\n")
+    return Util.write_file(Config.path, text .. "\r\n", true)
 end
 
 --- 供帮助界面显示

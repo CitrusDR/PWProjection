@@ -12,6 +12,9 @@
 | `selftest.py` | 自检：用合成数据验证工具链（39 项断言） |
 | `luacheck.py` | **Lua 静态检查** —— 真词法器 + 块结构平衡 + 未定义调用 + **10 项专项检查** + 跨模块接口校验 |
 | `luacheck_selftest.py` | 验证 luacheck 真能抓到"会崩游戏"的写法（**22/22 通过**） |
+| `check_meshmap.py` | 网格覆盖表校验（含重复键、多网格、路径合法性） |
+| `check_config_doc.py` | **配置说明文档检查** —— 每个 `DEFAULTS` 配置键都必须写在 `docs\配置说明.md` 里（防文档过期、防重复造开关） |
+| `make_snapshot.ps1` | **发版快照**：核对"工作区源码 == 游戏里正在跑的那份"，打包 mod+docs+tools，并生成 SHA256 清单<br>`powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\make_snapshot.ps1 -Label "2026-09-28_跨存档投影可用版"` |
 | `cleanup.ps1` | 从游戏里清掉旧 mod（PWRecon 等） |
 | `pw_recon.py` | 【已过时】旧的存档解析工具，只对 0.1.4 存档有效 |
 | `pw_sav_probe.py` | 【已过时】同上，零依赖结构探测 |

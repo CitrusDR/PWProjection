@@ -332,6 +332,20 @@ local function do_capture(mode)
     Log.emit("")
     Log.emit("已保存: " .. path)
 
+    -- ★ 自检输出（2026-09-28 加）: 有网格名、却一个 mesh_path 都没写出来。
+    --   这正是"跨存档投影缺件"的根因长相，而采集日志其余部分一切正常 ——
+    --   所以必须在这里**明确喊出来**，否则只能靠人去翻蓝图文件才发现。
+    local mc = (type(bp.meta) == "table") and bp.meta.meshCoverage or nil
+    if type(mc) == "table" then
+        Log.emit(string.format("网格覆盖: 有网格 %s / 有完整路径 %s / 共 %s 件",
+            tostring(mc.withMesh), tostring(mc.withPath), tostring(mc.total)))
+        if bp.meta.meshPathWarn ~= nil then
+            Log.emit("!! " .. tostring(bp.meta.meshPathWarn))
+            Notify.show("注意: 这份蓝图没写出资产路径（跨存档会缺件，看日志）",
+                "capture: mesh_path missing", "error")
+        end
+    end
+
     -- ★ 屏幕提示（待办 1）: 采集完立刻给一行"看得见"的结果。
     --   放在这里而不是函数最后 —— 后面的网格注册表导出要跑几秒，
     --   玩家不该为了看到"采集成功"等那么久。
@@ -390,6 +404,15 @@ local function do_capture(mode)
     if mesh_note == "网格注册表: 未建立" then
         Log.emit("!! " .. mesh_note)
     end
+
+    -- ★★★ 2026-09-28 修（玩家反馈确认）: 采集那条提示是**【导出之前】发的**
+    --   （见上面第 356 行"采集完成"），而导出（刷新网格注册表 + 写 pwbp_meshes.txt）
+    --   会卡住游戏主线程几秒 —— 卡住期间**没有画面**，但 `hud_seconds` 的计时在走
+    --   ⇒ 导出超过 hud_seconds 时，提示会"刚出现就被收走"。
+    --   修法: 导出结束后把**最后一条提示重发一次**（`Notify.resend` 会绕过节流、
+    --   重新计时；开销约 60ms 的 SetText）——
+    --   既保留"采集完立刻有反馈"的好处，又能在卡顿结束后完整停留 hud_seconds。
+    pcall(function() Notify.resend() end)
 
     Log.emit("")
     Log.emit("下一步: 按 J 加载这张蓝图 -> 按 N 做一次能力探测 -> 按 K 放投影")
@@ -610,21 +633,16 @@ local function do_ghost_toggle()
     Log.section("投影")
 
     if Ghost.visible then
-        -- ★★ 世界换了的话，"收起旧投影"是没有意义的 —— 它的对象早就随上个世界销毁了。
-        --   这时如果照旧走"收起"分支，玩家看到的现象就是**第一次按 K 没反应**
-        --   （玩家反馈过: "试了几次放置都没效果，重新点几次又好了"），
-        --   因为第一次按 K 只是把上个世界的状态清掉、然后就 return 了。
-        --   ⇒ 世界变了就直接丢掉引用，**继续往下走"放置"**。
-        if Ghost.stale_world() then
-            Ghost.forget("ghost-toggle: 世界已切换，旧的投影已失效")
-            Log.emit("（世界已切换: 上一个投影已失效，这次直接重新放置）")
-        else
-            Ghost.clear()
-            Log.emit("投影已收起，宿主对象已销毁（不会在读档时留下残留）。")
-            Notify.show("投影已收起（宿主对象已销毁）", "ghost hidden", "error")
-            flush_log()
-            return
-        end
+        -- ★★ 这里**不需要**再判断"世界有没有换":
+        --   换地图时 LoadMapPre 钩子已经 `Ghost.forget`（visible=false、引用清空），
+        --   所以"世界变了还显示着旧投影"这种情况不会出现。
+        --   历史上这里曾用"世界标记"判断 —— 而那个标记会抖动，结果是:
+        --   玩家想按 K 收起，却因为误判"换了世界"把投影**重新放了一遍**。
+        Ghost.clear()
+        Log.emit("投影已收起，宿主对象已销毁（不会在读档时留下残留）。")
+        Notify.show("投影已收起（宿主对象已销毁）", "ghost hidden", "error")
+        flush_log()
+        return
     end
 
     if not Session.active or Session.bp == nil then
@@ -684,6 +702,23 @@ local function do_ghost_toggle()
         Log.emit(string.format(
             "  注意: %d 件没有解析到网格资产，未显示（多为结构件）。",
             Ghost.stats.skipped_no_mesh))
+        -- ★ 列出"是哪些类型"（按件数降序，最多 10 行）——
+        --   换存档投影时如果缺件，这里能直接告诉你缺的是谁、要补哪条映射。
+        local tn = Ghost.stats.no_mesh_by_type
+        if type(tn) == "table" then
+            local arr = {}
+            for k, v in pairs(tn) do arr[#arr + 1] = { k = k, n = v } end
+            table.sort(arr, function(a, b)
+                if a.n ~= b.n then return a.n > b.n end
+                return a.k < b.k
+            end)
+            for i = 1, math.min(#arr, 10) do
+                Log.emit(string.format("    缺网格: %-32s %d 件", arr[i].k, arr[i].n))
+            end
+            if #arr > 10 then
+                Log.emit(string.format("    …还有 %d 种类型也缺", #arr - 10))
+            end
+        end
         Log.emit("  按 Y 或 U 重新采集一次，会同时导出 pwbp_meshes.txt")
         Log.emit("  （里面是真实的网格资产名，可据此补 pwbp_meshmap.json）")
     end
@@ -968,7 +1003,11 @@ local function rebuild_ghost(reason, force)
     return true
 end
 
-local function do_material_cycle()
+local function do_material_cycle(dir)
+    -- ★★ 2026-09-28 修: 原来左/右方向键都调"下一档"（没传方向），
+    --    于是往回切只能循环一圈（玩家反馈）。
+    --    约定: 右 = 下一档，左 = 上一档。
+    local sign = (dir == "left") and -1 or 1
     Log.clear()
     Log.section("投影材质")
     if not Session.active then
@@ -977,7 +1016,7 @@ local function do_material_cycle()
         return
     end
 
-    Ghost.cycle_material()
+    Ghost.cycle_material(sign)
     -- ★ 必须把新材质写回配置。
     --   因为 Ghost.prepare() 会从配置里读 ghost_material 覆盖 Ghost.material_mode，
     --   不写回的话"换材质"每次都被 prepare 打回原值 —— 按了等于没按。
@@ -1097,23 +1136,47 @@ local gate_ok, gate_why = false, "(未读取)"
 pcall(function() gate_ok, gate_why = Ghost.check_gate(nil) end)
 Log.emit("投影门禁: " .. tostring(gate_ok) .. "  " .. tostring(gate_why))
 
--- 换地图时不碰引擎、只丢引用。
--- ★ 默认【关闭】：世界加载期是最不该有额外动作的时刻，而现在投影还没解锁，
---   这个钩子没有任何收益。等真正需要跨世界保持引用时，把 config 里
---   hook_load_map_pre 改成 true。
+-- 换地图时【只丢引用、绝不碰引擎】。
+--
+-- ★★★ 2026-09-28: 这个钩子现在是"回标题 → 重进世界 → 闪退"那个 bug 的**正解**。
+--
+-- 为什么必须靠钩子（而不是"每次操作前比一下世界标记"）:
+--   · 上个世界的对象已被引擎销毁，而 `Util.usable()` / `IsValid()` 会**撒谎**
+--     （在废对象上返回 true）—— 所以"提前检测"本身就可能崩；
+--   · 权威信号只有一个: **引擎自己告诉你"要换地图了"** —— 就是 LoadMapPre。
+--     它只在真的换地图时触发，不会像轮询标记那样抖动。
+--   · 回调里**只做 Lua 侧的引用清空**（Ghost.forget / Hud.drop_world_refs），
+--     一个引擎接口都不调 —— 因此"在世界加载期做额外动作"这件事本身是安全的。
+--
+-- 历史: 这个钩子原来默认关（当时投影还没解锁、觉得没收益，且怕加载期出问题）。
+--       现在它是必需的: 不注册它，"回标题再进世界"后第一次操作就可能崩。
 local hook_on = (Config.get("hook_load_map_pre") == true)
+local Main_hook_registered = false
 if hook_on then
-    local okH = pcall(function()
-        RegisterLoadMapPreHook(function()
-            pcall(function() Ghost.forget("LoadMapPre") end)
-            pcall(function() Session.deactivate() end)
+    if Main_hook_registered == true then
+        Log.emit("LoadMapPre 钩子: 已注册过，跳过（F8 重载配置不会重复注册）")
+    else
+        local okH = pcall(function()
+            RegisterLoadMapPreHook(function()
+                -- ★ 只碰 Lua 状态，不碰引擎。任何一处真出问题也只记录、不抛出。
+                pcall(function() Ghost.forget("LoadMapPre") end)
+                pcall(function() Hud.drop_world_refs("LoadMapPre") end)
+                pcall(function() Session.deactivate() end)
+                pcall(function()
+                    Log.emit("[hook] LoadMapPre: 已丢弃投影与提示控件的引用（不碰引擎）")
+                    Log.flush()
+                end)
+            end)
         end)
-    end)
-    local msg = okH and "LoadMapPre 钩子已注册" or "LoadMapPre 钩子注册失败"
-    Log.emit(msg)
-    print(TAG .. " " .. msg)
+        if okH then Main_hook_registered = true end
+        local msg = okH and "LoadMapPre 钩子已注册（换地图时丢引用，防跨世界野指针）"
+            or "!! LoadMapPre 钩子注册失败 —— 回标题/重进世界后可能崩，请看日志"
+        Log.emit(msg)
+        print(TAG .. " " .. msg)
+    end
 else
-    Log.emit("LoadMapPre 钩子: 已按配置关闭（hook_load_map_pre=false）")
+    Log.emit("!! LoadMapPre 钩子: 已按配置关闭（hook_load_map_pre=false）")
+    Log.emit("   ★ 警告: 关掉它之后，「回标题 → 重进世界」后第一次操作可能闪退（跨世界野指针）")
     print(TAG .. " LoadMapPre hook: DISABLED (hook_load_map_pre=false)")
 end
 
@@ -1221,7 +1284,7 @@ local function do_arrow(dir)
         end
     else
         -- 材质 / 分层 / 步长
-        if dir == "left" or dir == "right" then do_material_cycle()
+        if dir == "left" or dir == "right" then do_material_cycle(dir)
         elseif dir == "fwd" then do_layer_cycle()
         elseif dir == "back" then do_step_cycle()
         end

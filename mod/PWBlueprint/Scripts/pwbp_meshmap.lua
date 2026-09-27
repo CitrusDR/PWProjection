@@ -201,8 +201,29 @@ function MeshMap.is_skeletal(path)
     if path == nil then return false end
     local s = tostring(path)
     local short = s:match("([^%.]+)$") or s
-    if MeshMap.skeletal_by_short == nil then return false end
-    return MeshMap.skeletal_by_short[short:lower()] == true
+
+    -- ① 注册表（最可靠 —— 但**只包含"当前已加载"的资产**）
+    if MeshMap.skeletal_by_short ~= nil
+        and MeshMap.skeletal_by_short[short:lower()] == true then
+        return true
+    end
+
+    -- ② ★★★ 名字约定兜底（2026-09-28 修「高科技建筑堆在帕鲁终端上面」）。
+    --
+    -- 为什么必须有这一条:
+    --   注册表是用 `FindAllOf("SkeletalMesh")` 建的 ⇒ **只含当前世界里已加载的资产**。
+    --   换存档 / 刚启动（那些资产还没被加载）时，同一个 `SK_...` 路径
+    --   在这里会返回 **false** ⇒ 骨骼建筑被当成"静态实例化"处理:
+    --     · 分组 key 不带序号 ⇒ 多件共用同一个组件；
+    --     · `fill` 里走静态分支 ⇒ `AddInstance` 在骨骼组件上必然失败 ⇒ 0 实例；
+    --     · 而且**不会进 `skel_list`** ⇒ 没人给它们单独摆位
+    --       ⇒ 组件停在"放置点"（玩家站的位置，通常就在帕鲁终端旁边）
+    --       ⇒ 玩家看到的正是"这些东西堆在终端上面"。
+    --   名字判断不依赖加载状态，正好补上这个洞。
+    --   （Palworld 的骨骼网格资产一律以 `SK_` 开头，这是资产命名约定。）
+    if short:sub(1, 3):lower() == "sk_" then return true end
+    if s:find("/SK_", 1, true) ~= nil then return true end
+    return false
 end
 
 --- 按"材料词"分桶（惰性建立）。
@@ -798,6 +819,28 @@ function MeshMap.resolve_all(building)
             MeshMap.resolve_stats.hit_override + 1
         MeshMap.cache[t] = ov
         return ov
+    end
+
+    -- 0.5) ★★★ 蓝图里带的【完整资产路径】—— 2026-09-28 新增，跨存档投影靠它。
+    --
+    -- 为什么放在这里（在多网格覆盖表之后、短名解析之前）:
+    --   · 多网格覆盖表是**人工确认过的完整构成**（一扇门 = 门框 + 两片门扇），
+    --     actor 上只读得到一个网格，所以覆盖表必须优先；
+    --   · 而"短名 → 路径"的注册表**只包含当前已加载的资产** ——
+    --     换一个存档投影时那些资产没被加载 ⇒ 查不到 ⇒ 跳过不画（玩家反馈的"缺件"）。
+    --     `mesh_path` 是采集时从 actor 上读到的**完整路径**，直接 `LoadAsset` 即可，
+    --     与"当前加载了什么"完全无关。
+    --
+    -- ★ 防御: 万一字段里还带着类名前缀（`Util.full_name` 的原始格式
+    --   "StaticMesh /Game/..."），这里也要能抠出路径来 —— 不能因为一个前缀就放弃。
+    if type(building.mesh_path) == "string" then
+        local only = building.mesh_path:match("(/.*)$")
+        if only ~= nil and only:find("/Game/", 1, true) ~= nil then
+            MeshMap.resolve_stats.hit_mesh_path =
+                (MeshMap.resolve_stats.hit_mesh_path or 0) + 1
+            MeshMap.cache[t] = { only }
+            return MeshMap.cache[t]
+        end
     end
 
     -- 1) 蓝图里已经带了短名（来自 actor 上的 Mesh 组件）

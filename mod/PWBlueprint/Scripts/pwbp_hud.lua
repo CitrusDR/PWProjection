@@ -447,6 +447,47 @@ function Hud.hide_now()
     return n
 end
 
+--- 【只丢引用，绝不碰引擎】—— 换地图 / 回标题时由 **LoadMapPre 钩子**调用。
+---
+--- ★★ 为什么必须"只丢引用"（2026-09-28 的方案修正）:
+---   上个世界的控件已经被引擎销毁。此时:
+---     · 调 `RemoveFromParent` / `RemoveFromRoot` / `SetVisibility` → 在废对象上操作 → 访问违例；
+---     · 连 `Util.usable()` / `IsValid()` 去"确认它还活着"都不行 —— 这两个会**撒谎**
+---       （在已销毁对象上返回 true）。
+---   所以唯一安全的动作就是: **把引用清掉，什么都不碰**。
+---   新世界需要提示时，`ensure_own_widget` 会重新建一个。
+---
+--- 与"轮询世代标记"的分工:
+---   · **钩子 = 权威信号**（真的换了地图才会触发）→ 负责"丢引用"；
+---   · **轮询 = 只诊断**（标记可能抖动）→ 只打印一行警告、**绝不销毁任何东西**。
+function Hud.drop_world_refs(reason)
+    local n = 0
+    local kinds = { "normal", "error" }
+    for i = 1, #kinds do
+        local st = Hud.styles[kinds[i]]
+        if st ~= nil then
+            if st.widget ~= nil then n = n + 1 end
+            st.widget, st.textblocks, st.found_by = nil, nil, nil
+            -- ★ 注意: 这里**不调用** RemoveFromRoot/RemoveFromParent（那是碰引擎）
+            st.rooted = false
+            st.world_name = nil
+            st.failed_until = nil      -- 新世界重新给这个样式一次机会
+            st.fresh, st.child_error = 0, nil
+        end
+    end
+    Hud.own_widget, Hud.own_textblock, Hud.own_textblocks = nil, nil, nil
+    Hud.invalidate_textblocks()        -- 扫描缓存里全是上个世界的对象，整份作废
+    Hud.pending = nil                  -- 还没补发的那条也作废（它属于上一个世界）
+    Hud.hide_gen = (Hud.hide_gen or 0) + 1   -- 让所有排队中的"自动隐藏"定时器失效
+    if Hud.ctx ~= nil then Hud.ctx.pc = nil end
+    if Log ~= nil then
+        Log.line(string.format(
+            "[hud] 已丢弃跨世界引用（不触碰引擎）: %s（丢掉 %d 个控件）",
+            tostring(reason), n))
+    end
+    return n
+end
+
 --- 彻底收回我们自己造的控件（两种样式都收）
 function Hud.destroy_own_widget()
     local any = false
@@ -705,6 +746,7 @@ Hud.styles = {
 function Hud.style_state(kind)
     local k = (kind == "error") and "error" or "normal"
     if k == "error" then
+        -- 【探索期遗留·已放弃】第二套『出错样式』控件（notify_error_class_name/text_child，默认空）—— 颜色没法自定义，不值得维护两套。
         local cn = Config.get("notify_error_class_name")
         if type(cn) ~= "string" or cn == "" then
             return Hud.styles.normal, "normal"
@@ -739,23 +781,17 @@ function Hud.ensure_own_widget(ctx, kind)
     --     EXCEPTION_ACCESS_VIOLATION（日志里 [ns] 正好停在"找文本框"之后）。
     --   ⇒ 结论: 一切"摸旧对象"的动作（连 usable/is_live 都算）都必须排在世界检查之后。
     --
-    -- ★★ 2026-09-28 补的失效保护: 读不到标签（no-tag）时**不当成换世界** ——
-    --   否则每次提示都会重建控件，旧的没人收，全堆在屏幕上（实测事故）。
+    -- ★★ 这里**不做**"世界标记"检查（2026-09-28 实测后去掉）。
+    --
+    -- 演进（三段，都要记住）:
+    --   ① 完全不检查 → "回标题→重进世界→按 Y"复用废控件 → 崩（§23）；
+    --   ② 加检查、不符就丢引用重建 → 标记抖动 ⇒ 每次提示都重建、旧提示堆屏（§24）；
+    --   ③ 改成"不符就跳过本次" → 标记抖动 ⇒ **只有第一条提示能显示**，
+    --      后面全被拒（玩家日志: `世界标记已变，跳过屏幕提示`，
+    --      而标记本身 `AActor: ...FAF8 -> ...5758 -> ...0B58` 每次都在变）。
+    --   ⇒ 结论: **这个标记不可信，不能用它做任何行为判断**；
+    --     跨世界的清理**只由 LoadMapPre 钩子负责**（日志证明它每次都正确触发）。
     local wt = Hud.world_tag()
-    -- ★★★ 世代守卫总开关默认【关】（见 config 里 world_guard_enabled 的说明）:
-    --   守卫因为"标记不稳定"把正常功能搞坏过（通知每次重建、旧提示堆屏），
-    --   所以先退回老行为；代码留着，等单独修的时候打开开关。
-    local guard_on = false
-    pcall(function()
-        guard_on = Config.get("world_guard_enabled") == true
-    end)
-    local wt_ok = guard_on and (type(wt) == "string" and wt ~= "" and wt ~= "no-tag")
-    if wt_ok and st.world_name ~= nil and st.world_name ~= wt then
-        st.widget, st.textblocks, st.found_by = nil, nil, nil
-        st.rooted = false          -- 根标记随之失效（不用也不能去 RemoveFromRoot）
-        Hud.own_widget, Hud.own_textblock, Hud.own_textblocks = nil, nil, nil
-        Hud.invalidate_textblocks()  -- 文本框缓存里存的也是上个世界的对象，全废
-    end
 
     if st.widget ~= nil and Util.usable(st.widget) and Hud.is_live(st.widget) then
         return st.widget, nil
@@ -948,6 +984,7 @@ end
 --- 现在的顺序（都很便宜，且不碰全局表）:
 ---   ① 按配置的子控件名现场取（属性 / GetWidgetFromName）—— 最准
 ---   ② 用创建时缓存下来的文本框对象（它是【我们自己控件】的子控件）
+-- 【探索期遗留·诊断】发送时遍历全局文本控件表兜底（notify_scan_in_send，默认关）—— 老实现每次发提示遍历约 2400 个对象，会摸到已销毁对象。
 ---   ③ 只有配置显式打开 notify_scan_in_send 时才走全局扫描（排查用）
 function Hud.find_own_textblocks(kind)
     local st = Hud.style_state(kind)
@@ -1122,6 +1159,7 @@ Hud.CHANNELS = {
                         --   它们是排查期的诊断信息，每次提示要多调 ~10 次引擎接口。
                         --   既然通道已经工作，就把发送路径压到最小:
                         --   找文本框 -> SetText -> force_display。
+                        -- 【探索期遗留·诊断】发送路径的额外引擎调用（notify_send_telemetry，默认关）—— 只在排查崩溃/性能时打开。
                         --   要看这些信息: 打开 notify_send_telemetry，或用 O 探测。
                         if Config.get("notify_send_telemetry") == true then
                             local rw = Hud.root_widget(w)
@@ -1185,6 +1223,8 @@ Hud.CHANNELS = {
           end                  -- F: 样式循环（normal -> error 或相反）
         end                    -- A: notify_own_widget
 
+-- 【探索期遗留·已放弃】『借用游戏自己文本框』的路线（notify_allow_borrow，默认关）—— 自建控件已走通，这条路不再用；配套键 notify_textblock_filter 也废弃。
+
             -- ---- 路线 B（兜底）: 借用游戏【活着的】文本控件 ----
             -- ★ 默认关闭（notify_allow_borrow = false）:
             --   这条会**临时改写游戏自己的 UI 文本**（延时还原），属于侵入性操作。
@@ -1233,6 +1273,7 @@ Hud.CHANNELS = {
                 local st_used = Hud.style_state(used_kind or "normal")
                 local w = st_used.widget
                 local secs = tonumber(Config.get("hud_seconds")) or 4.0
+                -- 【已废弃】轮询『世代守卫』（world_guard_enabled）—— 会把刚建好的投影丢掉（见 docs\踩坑记录.md §25）；现在换地图只用 LoadMapPre 钩子。
                 if w ~= nil and secs > 0 then
                     local my_gen = Hud.hide_gen
                     local my_world = st_used.world_name

@@ -17,6 +17,7 @@
 local Util = require("pwbp_util")
 local Json = require("pwbp_json")
 local BP = require("pwbp_bp")
+local Config = require("pwbp_config")
 
 local Library = {}
 
@@ -62,8 +63,31 @@ function Library.file_path(file_name)
 end
 
 --- 名字 -> 文件名
+---
+--- ★★ 2026-09-28 玩家要求: 文件名里带上**易读的采集时间**。
+---   起因: 他重采了很多次，却分不清"这份蓝图到底是什么时候采的"
+---   （当时的真实原因是我另一个 bug，但这条需求本身很合理 ——
+---     同一个基地反复采集时，能一眼看出哪份是哪份）。
+---
+---   怎么做的: 文件名 = `<基地名>_<YYYY-MM-DD_HHMM>.blueprint.json`，
+---   例如 `base_-1620_-609_2026-09-28_1430.blueprint.json`。
+---   ⚠️ 这样一来**每次采集都会产生一个新文件**（不覆盖旧的）——
+---     这是"能区分版本"的代价；不想要就在配置里关掉:
+---     把 `blueprint_name_with_time` 设为 false（关掉后按基地名覆盖，只留一份）。
 function Library.file_name_for(name)
-    return Util.slug(name) .. ".blueprint.json"
+    local base = Util.slug(name)
+    -- ★ 注意: Config.get 只接受一个参数（缺省值写在 DEFAULTS 里），
+    --   所以这里用"== false 才关掉"来表达"默认开、可显式关"。
+    if Config.get("blueprint_name_with_time") == false then
+        return base .. ".blueprint.json"
+    end
+    -- os.date 在 UE4SS 的 Lua 里可用；万一不可用就退回"不写时间"，
+    -- 绝不能因为时间戳拿不到就让采集失败。
+    local ok, stamp = pcall(function() return os.date("%Y-%m-%d_%H%M") end)
+    if not ok or type(stamp) ~= "string" or stamp == "" then
+        return base .. ".blueprint.json"
+    end
+    return base .. "_" .. stamp .. ".blueprint.json"
 end
 
 -- --------------------------------------------------------------------------

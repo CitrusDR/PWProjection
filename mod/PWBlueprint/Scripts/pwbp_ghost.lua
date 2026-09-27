@@ -87,6 +87,33 @@ local function find_class(path)
     return obj
 end
 
+--- 不能拿来"造组件"的组件类（按类名片段排除）。
+---
+--- ★★★ 2026-09-28 实测抓到的真凶:
+---   从世界里取"第一个 InstancedStaticMeshComponent 的类"，
+---   取到了 **`/Script/Pal.PalFoliageISMComponentBase`** ——
+---   那是 Palworld 的**植被**实例化组件（草/树用它），属于引擎的专用变体。
+---   拿它的类去 `AddComponentByClass` 给普通 Actor 造组件 → **直接崩**
+---   （日志: `组件类 OK 类=Class /Script/Pal.PalFoliageISMComponentBase`
+---           → `准备 AddComponentByClass: 宿主有效=true 根有效=true` → 崩）。
+---   为什么"偶发": 世界里第一个 ISM 是哪个，取决于玩家站在哪、当时加载了什么 ——
+---   站在草地附近就容易先撞上植被组件。
+local CLASS_DENY = {
+    "Foliage", "Hierarchical", "Landscape", "Spline", "Grass",
+}
+
+--- 这个类是不是"不能用来造组件"的专用变体？返回 true, 命中的片段
+local function class_denied(cls)
+    local fn = Util.full_name(cls)
+    if type(fn) ~= "string" then return false, nil end
+    for i = 1, #CLASS_DENY do
+        if fn:find(CLASS_DENY[i], 1, true) ~= nil then
+            return true, CLASS_DENY[i]
+        end
+    end
+    return false, nil
+end
+
 --- 取一个【真实存在】的组件类：从世界里已经有的同类组件上 GetClass()。
 ---
 --- ★ 为什么不能只靠 StaticFindObject 的路径字符串（2026-09-26 实测）:
@@ -101,6 +128,7 @@ end
 local function find_live_component_class(class_name, fallback_path)
     local ok, objs = pcall(function() return FindAllOf(class_name) end)
     if ok and type(objs) == "table" then
+        local skipped = {}
         for i = 1, #objs do
             local o = Util.unwrap(objs[i])
             if Util.usable(o) then
@@ -108,7 +136,17 @@ local function find_live_component_class(class_name, fallback_path)
                 pcall(function() cls = o:GetClass() end)
                 cls = Util.unwrap(cls)
                 if cls ~= nil and Util.usable_class(cls) then
-                    return cls, "live:" .. class_name
+                    -- ★★★ 排除"专用变体"（见 CLASS_DENY 的说明）:
+                    --   拿植被/地形那类组件的类去造普通组件 **会崩**。
+                    local denied, why = class_denied(cls)
+                    if not denied then
+                        if #skipped > 0 and Log ~= nil then
+                            Log.line("[ghost] 组件类挑选: 跳过了 " .. #skipped
+                                .. " 个专用变体（" .. table.concat(skipped, ", ") .. "）")
+                        end
+                        return cls, "live:" .. class_name
+                    end
+                    skipped[#skipped + 1] = tostring(why)
                 end
             end
         end
@@ -117,7 +155,8 @@ local function find_live_component_class(class_name, fallback_path)
         local cls = find_class(fallback_path)
         if cls ~= nil then return cls, "path:" .. fallback_path end
     end
-    return nil, "找不到类 " .. tostring(class_name)
+    return nil, "找不到可用的类 " .. tostring(class_name)
+        .. "（活实例里的都是专用变体，且路径兜底也不可用）"
 end
 
 local function load_asset(path)
@@ -214,13 +253,20 @@ local function material_for_mode(mode)
 end
 
 --- 切到下一个材质模式。返回 模式名, 说明
-function Ghost.cycle_material()
+--- 切换投影材质。sign = +1 下一档 / -1 上一档（默认 +1）。
+--- ★★ 2026-09-28 修: 原来没有方向参数，于是左/右方向键都只会"下一档"，
+---    要往回切只能循环一圈（玩家反馈）。现在两个方向都能用。
+function Ghost.cycle_material(sign)
+    -- ★ 方向: +1 = 下一档（右方向键），-1 = 上一档（左方向键）
+    if sign ~= -1 then sign = 1 end
+    local n = #Ghost.MATERIAL_MODES
     local cur = 1
-    for i = 1, #Ghost.MATERIAL_MODES do
+    for i = 1, n do
         if Ghost.MATERIAL_MODES[i] == Ghost.material_mode then cur = i break end
     end
-    cur = cur + 1
-    if cur > #Ghost.MATERIAL_MODES then cur = 1 end
+    cur = cur + sign
+    if cur > n then cur = 1 end          -- 往后越界 → 回到第一档
+    if cur < 1 then cur = n end          -- 往前越界 → 回到最后一档
     Ghost.material_mode = Ghost.MATERIAL_MODES[cur]
     return Ghost.material_mode
 end
@@ -244,6 +290,9 @@ local function destroy_host()
     Ghost.root = nil
     Ghost.components = {}
     Ghost.skel_list = {}
+    Ghost.skel_mesh = {}
+    Ghost.comp_mesh = {}
+    Ghost.comp_skel = {}
     Ghost.used = {}
     Ghost.visible = false
 end
@@ -349,27 +398,51 @@ local function new_ism(mesh_path, reg_key)
 
     -- 类要从【世界里已存在的同类组件】上取（见 find_live_component_class 的注释:
     -- 直接 StaticFindObject 类路径对 SkeletalMeshComponent 会拿到 TrivialObject）。
+    --
+    -- ★★ 2026-09-28: 一次 fill 里**只向世界要一次类，后面复用**（存在 Ghost.fill_*_cls 上）。
+    --   为什么: 世界里的现存组件可能包含"上个世界刚销毁、但还在对象表里"的废对象，
+    --   而 `Util.usable` 在废对象上会撒谎 ⇒ 反复向世界要类 = 反复暴露在这个风险下。
+    --   第一次成功拿到的类一定来自**本世界活着的组件**，复用它最安全（也更快）。
     local cls, cls_src
     if is_skeletal then
-        cls, cls_src = find_live_component_class("SkeletalMeshComponent",
-            "/Script/Engine.SkeletalMeshComponent")
+        cls, cls_src = Ghost.fill_skel_cls, "复用本次 fill 的骨骼类"
     else
-        cls, cls_src = find_live_component_class("InstancedStaticMeshComponent",
-            "/Script/Engine.InstancedStaticMeshComponent")
+        cls, cls_src = Ghost.fill_ism_cls, "复用本次 fill 的静态类"
+    end
+    if cls == nil then
+        if is_skeletal then
+            cls, cls_src = find_live_component_class("SkeletalMeshComponent",
+                "/Script/Engine.SkeletalMeshComponent")
+        else
+            cls, cls_src = find_live_component_class("InstancedStaticMeshComponent",
+                "/Script/Engine.InstancedStaticMeshComponent")
+        end
     end
     if cls == nil then
         tr("找不到组件类 -> 返回")
         return nil, "找不到组件类: " .. tostring(cls_src)
     end
-    tr("组件类 OK 来源=" .. tostring(cls_src))
+    -- 记下来给后面的组复用
+    if is_skeletal then
+        Ghost.fill_skel_cls = cls
+    else
+        Ghost.fill_ism_cls = cls
+    end
+    tr("组件类 OK 来源=" .. tostring(cls_src)
+        .. " 类=" .. tostring(Util.full_name(cls)))
 
+    tr(string.format("准备 AddComponentByClass: 宿主有效=%s 根有效=%s 骨骼=%s",
+        tostring(Util.valid(Ghost.host)), tostring(Util.valid(Ghost.root)),
+        tostring(is_skeletal)))
     local ok, c = pcall(function()
         return Ghost.host:AddComponentByClass(cls, true,
             Util.identity_transform(), false)
     end)
     local comp = ok and Util.unwrap(c) or nil
+    tr(string.format("AddComponentByClass 返回: pcall_ok=%s 结果=%s",
+        tostring(ok), tostring(c ~= nil)))
     if not Util.valid(comp) then
-        tr("AddComponentByClass 失败 -> 返回")
+        tr("AddComponentByClass 结果无效 -> 返回")
         return nil, "AddComponentByClass 失败(" .. tostring(cls_src) .. "): "
             .. tostring(c)
     end
@@ -384,6 +457,7 @@ local function new_ism(mesh_path, reg_key)
         comp:SetRenderInMainPass(true)
         comp:SetRenderInDepthPass(true)
     end)
+    tr("基础设置（Mobility/绝对变换/碰撞/阴影）OK")
     if Util.valid(Ghost.root) then
         local okA = pcall(function()
             comp:K2_AttachToComponent(Ghost.root, FName("None"), 0, 0, 0, false)
@@ -391,6 +465,9 @@ local function new_ism(mesh_path, reg_key)
         if okA then
             pcall(function() comp:SetAbsolute(false, false, false) end)
         end
+        tr("挂载到根组件: pcall_ok=" .. tostring(okA))
+    else
+        tr("根组件无效 -> 跳过挂载")
     end
 
     -- ---- 设网格 ----------------------------------------------------------
@@ -490,6 +567,12 @@ local function new_ism(mesh_path, reg_key)
     --   用 mesh_path 当 key 会把同一网格的多件互相覆盖，前面的组件就
     --   再也没人引用 -> 既不会随投影移动，也不会被销毁。
     Ghost.components[reg_key or mesh_path] = comp
+    -- ★★★ 2026-09-28: 把"这个组件是骨骼网格"记在**组件上** —— 依据是
+    --   **资产自身的类**（`is_skeletal` 是从 `GetClass()` 的真实全名判断的），
+    --   所以这是**权威结论**。`fill` 用它纠正"注册表没加载该资产 ⇒ 误判为静态"
+    --   的情况 —— 那个误判会让骨骼建筑堆在放置点上（见 MeshMap.is_skeletal 注释）。
+    if Ghost.comp_skel == nil then Ghost.comp_skel = {} end
+    Ghost.comp_skel[comp] = is_skeletal and true or false
     tr("组件创建完成 OK")
     return comp, nil
 end
@@ -530,6 +613,7 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
     --   对策: 每次重灌前先把【所有】组件隐藏，用到哪些再重新显示。
     --   （隐藏 ISM 也不会有副作用 —— 它没实例时本来就不画东西。）
     Ghost.used = {}
+    Ghost.comp_mesh = {}
     for _, c in pairs(Ghost.components) do
         if Util.valid(c) then
             pcall(function() c:SetVisibility(false, true) end)
@@ -537,6 +621,7 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
         end
     end
     Ghost.skel_list = {}
+    Ghost.skel_mesh = {}
     Ghost.stats = { components = 0, failed_components = 0, instances = 0,
                 skipped_no_mesh = 0, material_ok = 0, material_fail = 0,
                 material_missing = 0, material_original = 0,
@@ -560,6 +645,16 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
             local meshes = MeshMap.resolve_all(b)
             if meshes == nil then
                 Ghost.stats.skipped_no_mesh = Ghost.stats.skipped_no_mesh + 1
+                -- ★ 2026-09-28: 按【类型】统计缺网格的件数 —— 报告里直接列出
+                --   "哪些类型没解析到"，玩家/我都能一眼看出该补哪条映射，
+                --   而不是只知道"缺了 N 件"却不知道缺的是谁。
+                local tn = Ghost.stats.no_mesh_by_type
+                if tn == nil then
+                    tn = {}
+                    Ghost.stats.no_mesh_by_type = tn
+                end
+                local tk = tostring(b.t or "Unknown")
+                tn[tk] = (tn[tk] or 0) + 1
             else
                 for mi = 1, #meshes do
                     local mesh = meshes[mi]
@@ -592,6 +687,8 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
         -- ★ 只对前 25 组打细跟踪（实测崩点都在前 19 组内），并且每组建完就刷盘。
         --   为什么限个数: 75 组 × 每人数行会把日志淹掉，也没必要。
         Ghost.trace_left = 25
+        -- ★ 每次 fill 重新取组件类（本世界第一次创建时取，之后复用）
+        Ghost.fill_ism_cls, Ghost.fill_skel_cls = nil, nil
         Log.flush()
     end
     for i = 1, #order do
@@ -600,8 +697,10 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
         local is_skel = (base ~= key)
         local comp = Ghost.components[key]
         if Log ~= nil then
-            Log.line(string.format("[fill] 组 %d/%d 网格=%s 骨骼=%s 件数=%d 复用=%s",
-                i, #order, tostring(base), tostring(is_skel),
+            Log.line(string.format("[fill] 组 %d/%d 类型=%s 网格=%s 骨骼=%s 件数=%d 复用=%s",
+                i, #order, tostring((groups[key] ~= nil and groups[key][1] ~= nil)
+                    and groups[key][1].t or "?"),
+                tostring(base), tostring(is_skel),
                 (groups[key] ~= nil) and #groups[key] or 0,
                 tostring(Util.valid(comp))))
             -- ★ 前 25 组每组都刷盘（崩了也能看到"正做到第几组"）
@@ -619,9 +718,24 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
             end
         end
         if Util.valid(comp) then
+            -- ★★★ 2026-09-28 权威纠正: `new_ism` 是按**资产自身的类**判断骨骼与否的，
+            --   如果它说"这是骨骼组件"，那不管分组 key 怎么来的，都必须走骨骼分支
+            --   （静态分支的 `AddInstance` 在骨骼组件上必然失败 ⇒ 0 实例 +
+            --     不进 skel_list ⇒ 组件停在放置点上 = 玩家看到"堆在终端上面"）。
+            if Ghost.comp_skel ~= nil and Ghost.comp_skel[comp] == true then
+                if not is_skel and Log ~= nil then
+                    Log.line("[ghost] 注意: 分组当成静态了，但资产是骨骼网格 —— "
+                        .. "按骨骼处理（注册表未加载该资产时会误判）: " .. tostring(base))
+                end
+                is_skel = true
+            end
             -- 这一批要用它 -> 显示出来，并记进 used（show() 只显示 used 里的，
             -- 否则按 K 收起再放开会把上一批的骨骼网格一起放出来）
             Ghost.used[comp] = true
+            -- ★ 取证用: 记下"这个组件是哪个网格、往它里面放了几件"
+            --   （apply_transform 里会按"组件世界坐标 vs 放置点"核对悬空问题）
+            if Ghost.comp_mesh == nil then Ghost.comp_mesh = {} end
+            Ghost.comp_mesh[comp] = { mesh = base, n = 0 }
             pcall(function() comp:SetVisibility(true, true) end)
             pcall(function() comp:SetHiddenInGame(false, true) end)
             local list = groups[key]
@@ -638,6 +752,9 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
                     Ghost.skel_list[#Ghost.skel_list + 1] = {
                         comp = comp, rx = rx, ry = ry, rz = rz, yaw = yaw,
                     }
+                    -- ★ 记下"这个骨骼组件是哪个网格"（取证用: 悬空/跑偏时能指名道姓）
+                    if Ghost.skel_mesh == nil then Ghost.skel_mesh = {} end
+                    Ghost.skel_mesh[comp] = base
                     if ok_world then
                         pcall(function()
                             comp:K2_SetRelativeTransform(
@@ -670,6 +787,9 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
                 end)
                 if okAdd then
                     Ghost.stats.instances = Ghost.stats.instances + 1
+                    if Ghost.comp_mesh ~= nil and Ghost.comp_mesh[comp] ~= nil then
+                        Ghost.comp_mesh[comp].n = Ghost.comp_mesh[comp].n + 1
+                    end
                 end
                 end
                 end
@@ -701,11 +821,10 @@ end
 
 --- 把"放置变换"写到所有组件上
 function Ghost.apply_transform(place)
-    -- ★ 先查世界（只比字符串）: 换世界后组件已销毁，绝不往下走
-    if Ghost.stale_world() then
-        Ghost.forget("apply_transform: 世界已切换")
-        return false
-    end
+    -- ★★ 这里**不再**做"世界标记"检查 —— 2026-09-28 实测（玩家日志）:
+    --   标记每次调用都在变（`AActor: ...FAF8 -> ...5758`），于是这一步被**误跳过**，
+    --   投影的 374 件实例全部留在宿主原点上 ⇒ 玩家看到"放了但什么都没有"。
+    --   跨世界的清理**只由 LoadMapPre 钩子负责**（日志证明它每次都正确触发）。
     if not Util.valid(Ghost.host) then return false end
     if Ghost.instance_mode == "world" then
         -- 世界空间实例无需组件变换。但骨骼网格是【组件】不是实例，
@@ -742,14 +861,107 @@ function Ghost.apply_transform(place)
             end
         end
     end
+
+    -- ★★★ 2026-09-28 取证: "投影里有个东西悬在空中"（玩家截图）——
+    --   蓝图数据是干净的（z 最大 3.65 米，无异常记录），所以问题在渲染侧:
+    --   某个组件/实例的变换没生效，或者它被放到了别的地方。
+    --   而**骨骼网格**是"一个组件就是一件"，位置最好核对 ⇒ 把它们的
+    --   【期望位置】和【引擎回读的实际位置】都打出来，一对比就知道是谁跑偏了。
+    if Log ~= nil then
+        local hx, hy, hz = nil, nil, nil
+        pcall(function()
+            local l = Ghost.host:K2_GetActorLocation()
+            if l ~= nil then hx, hy, hz = l.X, l.Y, l.Z end
+        end)
+        local ncomp = 0
+        for _ in pairs(Ghost.components) do ncomp = ncomp + 1 end
+        Log.line(string.format(
+            "[ghost/dump] 放置点=(%.0f, %.0f, %.0f) 宿主=(%s, %s, %s) 组件=%d 骨骼=%d 模式=%s",
+            place.x, place.y, place.z,
+            tostring(hx), tostring(hy), tostring(hz),
+            ncomp,
+            (Ghost.skel_list ~= nil) and #Ghost.skel_list or 0,
+            tostring(Ghost.instance_mode)))
+        if Ghost.skel_list ~= nil then
+            for i = 1, #Ghost.skel_list do
+                local e = Ghost.skel_list[i]
+                local want = compose_place(place, e.rx, e.ry, e.rz, e.yaw)                -- ★ 注意 Util.transform_at 的返回形状是
+                --   { Rotation = ..., Translation = { X, Y, Z }, Scale3D = ... }
+                --   —— 平移在 .Translation 里，**不是** .X/.Y/.Z。
+                --   （差点在这里把 nil 传进 string.format，那会当场炸掉放置。）
+                local tr = (type(want) == "table") and want.Translation or nil
+                local wx = (tr ~= nil and tr.X) or 0.0
+                local wy = (tr ~= nil and tr.Y) or 0.0
+                local wz = (tr ~= nil and tr.Z) or 0.0
+                -- 期望的世界位置（compose_place 的平移部分）
+                local gx, gy, gz = nil, nil, nil
+                pcall(function()
+                    local l = e.comp:K2_GetComponentLocation()
+                    if l ~= nil then gx, gy, gz = l.X, l.Y, l.Z end
+                end)
+                local d = "?"
+                if gx ~= nil then
+                    local dx, dy, dz = gx - wx, gy - wy, gz - wz
+                    d = string.format("%.1f", math.sqrt(dx * dx + dy * dy + dz * dz))
+                end
+                Log.line(string.format(
+                    "  [ghost/dump] 骨骼 #%d %s 期望=(%.0f, %.0f, %.0f) 实际=(%s, %s, %s) 差=%s 厘米",
+                    i, tostring(Ghost.skel_mesh and Ghost.skel_mesh[e.comp] or "?"),
+                    wx, wy, wz,
+                    gx and string.format("%.0f", gx) or "读不到",
+                    gy and string.format("%.0f", gy) or "读不到",
+                    gz and string.format("%.0f", gz) or "读不到",
+                    d))
+            end
+        end
+
+        -- ★★★ 最关键的一条判据（2026-09-28，排查"某件悬在空中"）:
+        --   静态 ISM 的【偏移全在实例里】，所以每个组件的**世界坐标本身**
+        --   应该正好等于【放置点】。谁不等于放置点，谁就是那个跑偏的东西。
+        --   （骨骼组件不适用: 它们的偏移在组件自己的变换里，上面已单独核对过。）
+        Log.line("  [ghost/dump] —— 下面按「组件世界坐标 vs 放置点」核对（不等于放置点的就是嫌疑）——")
+        local nbad = 0
+        for comp, info in pairs(Ghost.comp_mesh or {}) do
+            if Util.valid(comp) then
+                local cx, cy, cz = nil, nil, nil
+                pcall(function()
+                    local l = comp:K2_GetComponentLocation()
+                    if l ~= nil then cx, cy, cz = l.X, l.Y, l.Z end
+                end)
+                local n_eng = nil
+                pcall(function() n_eng = comp:GetInstanceCount() end)
+                local dist = nil
+                if cx ~= nil then
+                    local dx, dy, dz = cx - place.x, cy - place.y, cz - place.z
+                    dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+                end
+                local suspicious = (dist == nil) or (dist > 50.0)
+                if suspicious then nbad = nbad + 1 end
+                Log.line(string.format(
+                    "    [ghost/dump]%s %s 组件世界=(%s, %s, %s) 距放置点=%s 厘米 实例(我们/引擎)=%s/%s",
+                    suspicious and " ★嫌疑" or "",
+                    tostring(info.mesh or "?"),
+                    cx and string.format("%.0f", cx) or "读不到",
+                    cy and string.format("%.0f", cy) or "读不到",
+                    cz and string.format("%.0f", cz) or "读不到",
+                    dist and string.format("%.0f", dist) or "?",
+                    tostring(info.n or "?"),
+                    tostring(n_eng)))
+            end
+        end
+        Log.line(string.format("  [ghost/dump] 核对完成: 组件 %d 个，其中距放置点 >50 厘米的 %d 个",
+            (function()
+                local n = 0
+                for _ in pairs(Ghost.comp_mesh or {}) do n = n + 1 end
+                return n
+            end)(), nbad))
+        Log.flush()
+    end
     return true
 end
 
 function Ghost.hide()
-    if Ghost.stale_world() then
-        Ghost.forget("hide: 世界已切换")
-        return false
-    end
+    -- 同上: 不做世界标记检查（它不稳定，会误跳过）。跨世界清理由 LoadMapPre 钩子负责。
     if not Util.valid(Ghost.host) then return false end
     for _, comp in pairs(Ghost.components) do
         if Util.valid(comp) then
@@ -784,16 +996,13 @@ function Ghost.show()
 end
 
 function Ghost.clear()
-    -- ★ 换世界后**绝对不能**去 destroy 旧对象（那是和引擎抢析构 = 访问违例）。
-    --   直接丢引用就行。
-    if Ghost.stale_world() then
-        Ghost.forget("clear: 世界已切换（只丢引用，不碰引擎）")
-        return true
-    end
+    -- 同上: 不做世界标记检查。换世界后的清理由 LoadMapPre 钩子丢引用完成
+    -- （那时这些对象已经随旧世界销毁，也没什么可清的）。
     clear_instances()
     destroy_host()
     Ghost.mesh_assets = {}
     Ghost.skel_list = {}
+    Ghost.skel_mesh = {}
     Ghost.stats = { components = 0, failed_components = 0, instances = 0,
                 skipped_no_mesh = 0, material_ok = 0, material_fail = 0,
                 material_missing = 0, material_original = 0,
@@ -809,6 +1018,9 @@ function Ghost.forget(reason)
     Ghost.root = nil
     Ghost.components = {}
     Ghost.skel_list = {}
+    Ghost.skel_mesh = {}
+    Ghost.comp_mesh = {}
+    Ghost.comp_skel = {}
     Ghost.used = {}
     Ghost.mesh_assets = {}
     Ghost.visible = false
@@ -822,24 +1034,20 @@ function Ghost.forget(reason)
     return true
 end
 
---- 世界换了吗？—— ★ 只比较字符串，**不碰任何对象**（见 Util.world_tag 的说明）。
---- 回标题 / 换存档后，上个世界的宿主/组件都已销毁；
---- 这时哪怕只是 `Util.usable(comp)` 都可能返回 true，然后拿它调方法就崩。
+--- 世界换了吗？—— ★★ **只用于诊断/日志，绝对不要拿它决定"要不要跳过或销毁"**。
+---
+--- 2026-09-28 实测结论（玩家日志，两次事故）:
+---   · 这个"标记"**每次调用都可能不同**:
+---       `AActor: 0000016C81FEFAF8 -> AActor: 0000016C78405758 -> ...`
+---     （世界里存在多个 PlayerController，`FindAllOf` 返回顺序不定，
+---       而 `IsLocalPlayerController` 在 UE4SS 里似乎取不到 ⇒ 每次挑到不同的那个）；
+---   · 一旦依它做判断:
+---       跳过 → 提示全没了、投影不上变换（"放了什么都没有"）；
+---       销毁 → 刚建好的投影被丢掉（"每次 0 件"）。
+---   ⇒ **跨世界的唯一权威信号是 `LoadMapPre` 钩子**（日志证明它每次都正确触发）。
+---     这个函数留着只为"哪天需要打印诊断信息"，不要在行为分支里用它。
 function Ghost.stale_world()
-    -- ★★★ 总开关默认【关】（见 config 里 world_guard_enabled 的说明）:
-    --   为了"重进世界"那个 bug 加的守卫，因为标记不稳定反而把正常放置搞坏了，
-    --   所以先退回老行为 —— 守卫代码留着，等单独修的时候打开开关测。
-    local on = false
-    pcall(function()
-        on = require("pwbp_config").get("world_guard_enabled") == true
-    end)
-    if not on then return false end
-
     local t = Util.world_tag()
-    -- ★★ 失效保护: **读不到标签时绝不当成"换了世界"**。
-    --   实测（2026-09-28）标签曾经不稳定，于是刚刚建好的投影
-    --   在 apply_transform 里被自己判成"换世界"→ 整个丢掉 → "每次都 0 件"。
-    --   宁可少重置一次，也绝不能误删活着的投影。
     if Ghost.world_name == nil or t == nil or t == "" or t == "no-tag" then
         return false
     end
