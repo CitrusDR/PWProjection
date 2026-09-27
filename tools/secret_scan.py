@@ -1,7 +1,21 @@
-"""密钥/凭据审计：扫描"会被上传到 git 的文件"。
+"""密钥 / 凭据审计（提交前跑一遍）。
 
-一次性脚本，跑完可删（或在需要复查时再跑）。
-用法: python tools/_secret_scan.py [仓库根目录]
+用法:
+    python tools/secret_scan.py                # 扫当前仓库
+    python tools/secret_scan.py <仓库根目录>
+
+它会扫四个地方:
+  1. **git 跟踪的文件** —— 这些才是会真正被上传的内容（最重要）
+  2. 未跟踪、也没被 .gitignore 忽略的文件（将来可能被 add 进去）
+  3. 被 .gitignore 忽略的文件（不会被上传，只列数量）
+  4. **git 历史**（所有提交的完整内容）—— 提交过、后来删掉的也留在这里
+
+检查项: OpenAI/DeepSeek/Anthropic/Google 的 key、AWS Access Key、GitHub/Slack token、
+私钥文件内容、JWT、`api_key=` 之类赋值、Bearer 头、URL 内嵌凭据，以及邮箱地址。
+
+⚠️ 它只是**辅助**，不能替代判断:
+   命中不等于泄露（SHA256 校验值也会被"32+ 位十六进制"规则命中）；
+   没命中也不等于安全（新格式的密钥不在模式里）。
 """
 import os
 import re
