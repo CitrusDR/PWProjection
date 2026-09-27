@@ -45,6 +45,13 @@ PATTERNS = [
 # 与"密钥"无关但值得知道的：邮箱（会公开个人身份）
 EMAIL = (r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b", "邮箱地址")
 
+# 这些文件里是**故意写的示例**（工具自身的模式定义、文档里的用法示例），
+# 它们会命中自己定义的规则 —— 单独列出来，不当成泄露。
+SELF_REF_OK = {
+    "tools/secret_scan.py",
+    "tools/README.md",
+}
+
 
 def scan_files(files, label, extra=()):
     hits = {}
@@ -60,20 +67,29 @@ def scan_files(files, label, extra=()):
                     (f, line, m.group(0)[:100].replace("\n", " ")))
     print("\n=== %s（%d 个文件）===" % (label, len(files)))
     found = False
+    self_ref = []
     for name, _ in list(PATTERNS) + list(extra):
         h = hits.get(name)
         if not h:
             continue
+        real = [x for x in h if x[0].replace("\\", "/") not in SELF_REF_OK]
+        self_ref += [x for x in h if x[0].replace("\\", "/") in SELF_REF_OK]
+        if not real:
+            continue
         found = True
-        print("\n[!] %s —— %d 处" % (name, len(h)))
+        print("\n[!] %s —— %d 处" % (name, len(real)))
         seen = set()
-        for f, ln, s in h:
+        for f, ln, s in real:
             if (f, ln) in seen:
                 continue
             seen.add((f, ln))
             print("    %s:%d  %s" % (f, ln, s))
+    if self_ref:
+        files_ok = sorted({x[0] for x in self_ref})
+        print("\n[i] 已知示例（工具/文档里故意写的，忽略）: %d 处，位于 %s"
+              % (len(self_ref), ", ".join(files_ok)))
     if not found:
-        print("    没有命中任何模式 ✔")
+        print("    没有命中任何需要处理的模式")
     return found
 
 
