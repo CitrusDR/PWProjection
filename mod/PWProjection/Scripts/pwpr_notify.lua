@@ -68,6 +68,8 @@ Notify.KEYS = {
     { group = "numpad", key = "NUM 9/3", cn = "上 / 下",             en = "up / down" },
     { group = "numpad", key = "+ / -",   cn = "逆 / 顺时针旋转",     en = "rotate" },
     { group = "numpad", key = "NUM 5",   cn = "清掉偏移与旋转",      en = "reset offset" },
+    { group = "numpad", key = "NUM 7",   cn = "★ 建筑吸附: 对齐到附近原建筑（键名可在配置 snap_key 改）",
+                                                                     en = "snap to nearby buildings" },
     { group = "numpad", key = "NUM 0",   cn = "换微调步长",          en = "cycle step" },
     { group = "numpad", key = "NUM 1",   cn = "★ 紧急收回屏幕提示控件", en = "drop notify widget" },
     { group = "numpad", key = "*",       cn = "换投影材质",          en = "cycle material" },

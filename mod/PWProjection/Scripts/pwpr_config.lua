@@ -114,6 +114,36 @@ local DEFAULTS = {
     rotate_step_deg    = 15,      -- 一次转多少度
     height_step_cm     = 100,
 
+    -- ---- 建筑吸附（按 NUM 7 / F5: 把投影一步对齐到原建筑的实际位置）----
+    -- 做什么、怎么算、日志怎么看: 见 pwpr_snap.lua 文件头 + docs\配置说明.md
+    --   「建筑吸附」一节。原则: **只改投影偏移，不动蓝图数据**。
+    --
+    -- 总开关。默认开（这个功能是"只读+算偏移"，不创建任何引擎对象，
+    --   和投影渲染不是一回事；出问题时先关它排查）。
+    snap_enabled     = true,
+    -- 【最常需要调的】配对阈值（厘米）: 投影里的一件与原建筑差多远以内，
+    --   才认为"这俩可能是同一件"。
+    --   ★ 经验关系: 投影刚放出来时原点是"玩家脚下"，所以**你站得离基地中心
+    --     越远，需要的值越大**（站在基地中心附近: 2000 足够；站在基地边上
+    --     往外吸: 调到 4000~6000）。太大也不会乱吸 —— 最终是"复核"分说话的。
+    snap_radius_cm   = 2000,
+    -- 复核容差（厘米）: 判定"这一件真的对上了"的距离上限。
+    --   调大 = 更容易认为"对上了"（数值虚高），调小 = 更严格。
+    --   基地格状排列时，这个值应当**明显小于建筑间距**，否则"错一格"也算对上。
+    snap_verify_cm   = 150,
+    -- 至少要有这么多件对上，才接受这次吸附（否则投影一动不动，只报原因）。
+    --   故意不设成 1: 只对上 1 件时多半是巧合，挪过去反而更糟。
+    snap_min_matches = 3,
+    -- 吸附时是否**同时自动找朝向**（true 会用"参照朝向 - 记录朝向"投票）。
+    --   false = 只平移、保持你当前转到的朝向（你已经在用 +/- 精调朝向时用）。
+    snap_yaw_search  = true,
+    -- 吸附键。默认小键盘 7（`NUM_SEVEN` 是本 UE4SS 版本 `Key` 表里的名字）。
+    --   没有小键盘的键盘（84 配 / 75% / 笔记本）改成别的键名再**重启游戏**——
+    --   键位是启动时注册的，`F8` 重载配置不会重绑。
+    --   写法参考代码里其他绑定: `F7` / `NUM_EIGHT` / `ADD` / `UP_ARROW` / `G`。
+    --   不确定的名字也可以填，启动日志会写 "BIND FAILED"，并且会自动退回备用键 G。
+    snap_key         = "NUM_SEVEN",
+
     -- ---- 投影外观/位置 ----
     -- 投影材质。循环里保留 4 档（游戏里 F9 进 material 模式，←/→ 切换）：
     --   building  = 蓝   MI_LooksPredicatorBuilding      ← 默认
@@ -464,6 +494,8 @@ Config.KEY_GROUP = {
     ghost_enabled = 1, ghost_max_instances = 1, ghost_material = 1,
     player_feet_offset_cm = 1,
     nudge_step_cm = 1, rotate_step_deg = 1,
+    snap_enabled = 1, snap_radius_cm = 1, snap_verify_cm = 1,
+    snap_min_matches = 1, snap_yaw_search = 1, snap_key = 1,
     hud_enabled = 1, hud_seconds = 1, notify_channel = 1, notify_min_interval = 1,
     notify_try_notice_text = 1, notify_own_widget = 1, notify_widget_class_path = 1,
     notify_widget_class_name = 1, notify_widget_text_child = 1,
@@ -560,14 +592,19 @@ function Config.save()
 end
 
 --- 供帮助界面显示
+---
+--- ★ 只列"现在真的在起作用"的键 ——
+---   原来这里印的是 ghost_layer_mode（已不生效的历史键，见 KEY_GROUP 第 3 组），
+---   玩家在 F7 里看到它会以为改那个有用。2026-09-28 换成吸附的两个关键参数。
 function Config.brief_lines()
     return {
         string.format("  capture_radius_m   = %s", tostring(Config.get("capture_radius_m"))),
         string.format("  layer_gap_cm       = %s", tostring(Config.get("layer_gap_cm"))),
         string.format("  ghost_enabled      = %s", tostring(Config.get("ghost_enabled"))),
-        string.format("  ghost_layer_mode   = %s", tostring(Config.get("ghost_layer_mode"))),
         string.format("  nudge_step_cm      = %s", tostring(Config.get("nudge_step_cm"))),
         string.format("  rotate_step_deg    = %s", tostring(Config.get("rotate_step_deg"))),
+        string.format("  snap_enabled       = %s", tostring(Config.get("snap_enabled"))),
+        string.format("  snap_radius_cm     = %s", tostring(Config.get("snap_radius_cm"))),
         string.format("  hud_enabled        = %s", tostring(Config.get("hud_enabled"))),
         string.format("  notify_channel     = %s", tostring(Config.get("notify_channel"))),
     }

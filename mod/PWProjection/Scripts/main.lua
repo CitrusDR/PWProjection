@@ -76,6 +76,7 @@ local Library  = require("pwpr_library")
 local MeshMap  = require("pwpr_meshmap")
 local Session  = require("pwpr_session")
 local Ghost    = require("pwpr_ghost")
+local Snap     = require("pwpr_snap")
 local Probe    = require("pwpr_probe")
 local Hud      = require("pwpr_hud")
 local Notify   = require("pwpr_notify")
@@ -800,6 +801,128 @@ local function do_resnap()
     flush_log()
 end
 
+-- ---------------------------------------------------------------------------
+-- 建筑吸附（路线图"待办 2"）—— 默认小键盘 7，键名可用配置 snap_key 改
+--
+-- ★ 为什么做成"按键触发"而不是"自动吸附":
+--   ① 自动吸附会和手动微调打架（你每挪一格它就把你吸回去，反而没法精调）；
+--   ② 算一次要读几千个 actor 的位置（几百毫秒），不适合每帧做。
+--   所以: 想对齐就按一下 —— 算完给一行反馈（对上多少件 / 移动了多少）。
+--
+-- ★ 与 H 的区别（两个"吸附"很容易混）:
+--   H（resnap） = 把投影**挪到你脚下**，偏移清零（定位用）
+--   NUM 7      = 把投影**对齐到附近的真实建筑**（对齐用，改偏移和朝向）
+-- ---------------------------------------------------------------------------
+
+local function do_snap()
+    Log.clear()
+    Log.section("建筑吸附")
+
+    if Config.get("snap_enabled") ~= true then
+        Log.emit("!! 建筑吸附已被配置关闭（snap_enabled = false）。")
+        Notify.show("建筑吸附已关闭: snap_enabled = false",
+            "snap disabled in config", "error")
+        flush_log()
+        return
+    end
+
+    if not Session.active or Session.bp == nil then
+        Log.emit("!! 还没有加载蓝图。先按 Y/U 采集，再按 J 加载。")
+        Notify.show("还没有加载蓝图（先按 J）", "no blueprint loaded", "error")
+        flush_log()
+        return
+    end
+    if not Ghost.visible then
+        Log.emit("!! 投影是收起的。按 K 放出来再吸附（看着投影吸最直观）。")
+        Notify.show("投影是收起的: 先按 K 放出来", "ghost hidden: press K first", "error")
+        flush_log()
+        return
+    end
+
+    local place0 = Session.place()
+    if place0 == nil then
+        Log.emit("!! 拿不到玩家位置，无法计算吸附。")
+        Notify.show("拿不到你的位置，无法吸附", "cannot snap: no player position", "error")
+        flush_log()
+        return
+    end
+
+    Log.emit(string.format("基准: 投影原点 (%.0f, %.0f, %.0f) 朝向 %.1f 度",
+        place0.x, place0.y, place0.z, place0.yaw or 0.0))
+    Log.emit(string.format(
+        "参数: 配对阈值 %.0f 厘米 / 复核容差 %.0f 厘米 / 至少对上 %d 件 / 找朝向 %s",
+        tonumber(Config.get("snap_radius_cm")) or 0,
+        tonumber(Config.get("snap_verify_cm")) or 0,
+        tonumber(Config.get("snap_min_matches")) or 0,
+        tostring(Config.get("snap_yaw_search") == true)))
+    Log.flush()
+
+    local t0 = os.clock()
+    local res, err = Snap.solve(Session.bp, place0, {
+        radius_cm   = Config.get("snap_radius_cm"),
+        verify_cm   = Config.get("snap_verify_cm"),
+        min_matches = Config.get("snap_min_matches"),
+        yaw_search  = Config.get("snap_yaw_search") == true,
+    })
+    local ms = (os.clock() - t0) * 1000.0
+
+    if res == nil then
+        Log.emit("!! 吸附失败: " .. tostring(err))
+        Log.emit(string.format("  （用时 %.0f 毫秒；投影一动没动，偏移和朝向都没改）", ms))
+        Log.emit("  可以试: ① 站到基地里更靠中心的位置再按；")
+        Log.emit("          ② 把 snap_radius_cm 调大（你离基地中心越远，需要的值越大）；")
+        Log.emit("          ③ 用 +/- 把朝向转到大致对（差得太多时同类型的件配不上）；")
+        Log.emit("          ④ 这张蓝图不是从这个基地采的（那就没有'原建筑'可对）。")
+        Notify.show("吸附失败: " .. tostring(err), "snap failed", "error")
+        flush_log()
+        return
+    end
+
+    -- ★ 只改投影的偏移与朝向 —— **蓝图数据一个字节都不动**。
+    --   反推: place = 锚点 + 偏移 + 脚底修正，所以反过来只需要一个增量:
+    --         offset = offset + (place_new - place_old)
+    --   （这样也就不需要知道脚底偏移 / 包围盒半高是多少。）
+    Session.offset.x = Session.offset.x + (res.place.x - place0.x)
+    Session.offset.y = Session.offset.y + (res.place.y - place0.y)
+    Session.offset.z = Session.offset.z + (res.place.z - place0.z)
+    Session.yaw = res.yaw_after
+
+    emit_lines(Snap.report_lines(res))
+    Log.emit(string.format("  用时 %.0f 毫秒", ms))
+
+    -- ★ 这里**故意不调用 refresh_projection()**:
+    --   它会再发一条屏幕提示，而 Notify 有 0.25 秒节流窗口 ——
+    --   两条挤在一起时，**后发的那条（吸附结果）会被丢掉**，
+    --   玩家就看不到"到底对上了多少件"。所以自己改、提示只发一条。
+    local p2 = Session.place()
+    if p2 ~= nil then
+        if Ghost.instance_mode == "world" then
+            -- ★ 世界空间实例（能力探测发现 AddInstance 不可用时的退路）里，
+            --   实例坐标是**绝对世界坐标**，改组件变换完全无效 ⇒ 必须重灌。
+            local fmode, fidx = Session.filter()
+            Ghost.fill(Session.bp, p2, fmode, fidx)
+            Log.emit("  投影已按吸附结果重建（世界空间实例模式必须重灌）。")
+        else
+            Ghost.apply_transform(p2)
+            Log.emit("  投影已按吸附结果移动（局部实例模式，没有重建实例）。")
+        end
+    end
+
+    local warn = ""
+    if res.ambiguous then
+        warn = "（有歧义，看一眼）"
+    elseif res.low_coverage then
+        warn = string.format("（匹配 %.0f%%，看一眼）", (res.ratio or 0.0) * 100.0)
+    end
+    Notify.show(string.format("吸附: 对上 %d/%d 件，移动 %.0f 厘米%s%s",
+        res.matched, res.total or res.records or 0, res.shift_cm or 0.0,
+        (math.abs(res.yaw_delta or 0.0) >= 0.5)
+            and string.format("，转向 %+.0f°", res.yaw_delta) or "", warn),
+        string.format("snap: %d/%d matched, moved %.0f cm",
+            res.matched, res.total or res.records or 0, res.shift_cm or 0.0))
+    flush_log()
+end
+
 local function do_nudge(axis)
     if not Session.active then return end
     if not Ghost.visible then
@@ -900,6 +1023,11 @@ local function do_help()
     Log.line("  " .. Hud.describe())
     emit_lines(Session.status_lines())
     Log.line("  " .. Ghost.describe())
+    -- ★ 建筑吸附: 把"上一次吸附算出了什么"留在这里 ——
+    --   吸附是"按一下看结果"的操作，FAQ 里第一个问题就是"它到底对上了没有"。
+    Log.line("  建筑吸附: " .. ((Snap.last ~= nil)
+        and Snap.describe(Snap.last)
+        or "还没用过（按小键盘 7；键名可在配置 snap_key 改）"))
     local gate_ok, gate_why = Ghost.check_gate(nil)
     Log.line(string.format("  投影门禁: %s (%s)", tostring(gate_ok), tostring(gate_why)))
     Log.line("")
@@ -926,6 +1054,7 @@ local function do_help()
     print(TAG .. " K ghost on/off | L layer | H resnap")
     print(TAG .. " N render-probe | O notify-probe")
     print(TAG .. " numpad 8/2 4/6 9/3 move, +/- rotate, 5 reset, 0 step")
+    print(TAG .. " numpad 7 = snap ghost to nearby real buildings (snap_key)")
     print(TAG .. " numpad * = cycle ghost material")
     print(TAG .. " material mode: " .. Ghost.material_description())
     print(TAG .. " notify: " .. Util.ascii(Hud.describe()))
@@ -1256,6 +1385,25 @@ try_bind("MUL=material", "MULTIPLY", {}, on_game_thread("material-cycle",
 -- ★ 小键盘 1: 紧急收回我们自建的提示控件（见 do_drop_notify_widget 的说明）
 try_bind("NUM_1=drop-notify", "NUM_ONE", {}, on_game_thread("drop-notify",
     do_drop_notify_widget))
+-- ★ 建筑吸附键（路线图待办 2）。默认 **小键盘 7** ——
+--   ① 放在小键盘里是因为"挪投影"就在这片键上，吸完还想微调时手不用离开；
+--   ② 功能键全被占了（F1~F4 是 UE4SS、F5/F6 是 FirstPerson mod、F11/F12 是全屏/截图），
+--      而字母键里只有 Y U H J K L 实测确认空闲。
+--   ★ 键名**可配置**（snap_key）: 没有小键盘的键盘（84 配 / 75%）把 `snap_key`
+--     改成 `"G"` 之类再重启游戏即可。键名就是 UE4SS `Key` 表里那个名字
+--     （写法可参考本文件其他 try_bind: F7 / NUM_EIGHT / ADD / UP_ARROW）。
+--   ★ 万一日志里出现 "BIND FAILED: snap=..."（键名写错/枚举里没有），
+--     自动再试一个备用键 G，保证这一版里功能一定够得着。
+local snap_key = Config.get("snap_key")
+if type(snap_key) ~= "string" or snap_key == "" then snap_key = "NUM_SEVEN" end
+do
+    local ok_snap = try_bind("snap=" .. snap_key, snap_key, {},
+        on_game_thread("snap", do_snap))
+    if not ok_snap then
+        try_bind("snap-fallback-G", "G", {}, on_game_thread("snap-g", do_snap))
+        Log.emit("!! 吸附键 " .. snap_key .. " 没绑上，已改用备用键 G")
+    end
+end
 
 -- ---------------------------------------------------------------------------
 -- ★ 方向键 + 模式：给没有小键盘的键盘（84 配列 / 75%）
@@ -1335,6 +1483,7 @@ end
 print(TAG .. " ------------------------------------------------")
 print(TAG .. " F7=help F8=reload-cfg  Y=near  U=all  J=next-bp  K=ghost")
 print(TAG .. " L=layer H=resnap N=render-probe O=notify-probe")
+print(TAG .. " NUM_7=snap-to-buildings (key name configurable: snap_key)")
 print(TAG .. " arrows=action F9=arrow-mode")
 print(TAG .. " ------------------------------------------------")
 
