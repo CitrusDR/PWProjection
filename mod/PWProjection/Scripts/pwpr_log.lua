@@ -1,5 +1,5 @@
 --[[ ===========================================================================
-  PWBP · log  ——  控制台 + 文件双写
+  PWPR · log  ——  控制台 + 文件双写
 
   为什么双写:
     · 控制台（UE4SS 窗口）是"立刻能看到"的通道，但它只吃 ASCII，
@@ -9,15 +9,15 @@
   用法:
     Log.init(Util.script_dir)
     Log.emit("...")        立刻写控制台，进缓冲
-    Log.flush("pwbp.log")  缓冲追加落盘
+    Log.flush("pwpr.log")  缓冲追加落盘
 =========================================================================== ]]
 
-local Util = require("pwbp_util")
+local Util = require("pwpr_util")
 
 local Log = {}
 
 Log.dir = nil
-Log.default_file = "pwbp.log"
+Log.default_file = "pwpr.log"
 Log.buffer = {}
 Log.echo = true
 Log.buffer_limit = 8000

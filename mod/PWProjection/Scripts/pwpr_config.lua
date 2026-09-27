@@ -1,7 +1,7 @@
 --[[ ===========================================================================
-  PWBP · config  ——  配置读写（纯 Lua）
+  PWPR · config  ——  配置读写（纯 Lua）
 
-  配置放在 Mods\PWBlueprint\Scripts\pwbp_config.json。
+  配置放在 Mods\PWProjection\Scripts\pwpr_config.json。
   每次启动读一次；热键改配置后立刻回写，不需要重启游戏。
 
   ★★★ 改这个文件（DEFAULTS / 分组 / 迁移）时必须遵守的规矩（2026-09-28 定）:
@@ -27,8 +27,8 @@
                     这是本 mod 唯一的破坏性功能，默认锁死。
 =========================================================================== ]]
 
-local Util = require("pwbp_util")
-local Json = require("pwbp_json")
+local Util = require("pwpr_util")
+local Json = require("pwpr_json")
 
 local Config = {}
 
@@ -53,7 +53,7 @@ Config.migrated = nil      -- 本次读取是否做了默认值迁移
 ---   3 -> 4: notify_try_client_message 默认从 false 改成 true。
 ---          ★★ 这次我【又犯了一遍同样的错】:
 ---            我把 DEFAULTS 改成 true，却没做迁移 ——
----            玩家的 pwbp_config.json 里早就写死了 false，
+---            玩家的 pwpr_config.json 里早就写死了 false，
 ---            Config.get 读的是文件值 → 门禁仍然是关的 →
 ---            那一整轮"按 O 测试"里 **ClientMessage 根本没被调用过**，
 ---            于是"没有英文提示"看起来像"ClientMessage 无效"，其实是没测。
@@ -158,7 +158,7 @@ local DEFAULTS = {
     --   现在连探测的"真发一行测试文字"都会拒绝调用它（never_call）。
     notify_try_client_message = false,
     notify_allow_named_1arg   = false,  -- 允许尝试调用 notify_func 指定的函数（1 个字符串参数）
-    notify_func               = "",     -- notify_allow_named_1arg 用的函数名（从 pwbp_ui.txt 里抄）
+    notify_func               = "",     -- notify_allow_named_1arg 用的函数名（从 pwpr_ui.txt 里抄）
     -- ---- 游戏内中文提示（★ 默认开）----
     -- 走 Palworld 自己的通知控件: 找到活着的 TextBlock 后 SetText(FText("中文"))。
     -- 用的是 UMG 标准函数（SetText / SetVisibility，参数个数公开已知），
@@ -321,7 +321,7 @@ end
 
 --- 返回 配置表, 状态字符串
 function Config.load(script_dir)
-    Config.path = Util.join(script_dir, "pwbp_config.json")
+    Config.path = Util.join(script_dir, "pwpr_config.json")
     Config.values = {}
     Config.loaded_ok = false
     Config.load_error = nil
@@ -538,7 +538,7 @@ function Config.save()
     end
     local lines = { "{" }
     lines[#lines + 1] = '  "_readme": '
-        .. Json.encode("PWBlueprint 配置 —— 只有【和默认值不同】的键会出现在这里；"
+        .. Json.encode("PWProjection 配置 —— 只有【和默认值不同】的键会出现在这里；"
         .. "没有的键 = 用代码里的默认值。改完在游戏里按 F8 即时生效。"
         .. "下划线开头的键是说明/分组标题，会被忽略。", false) .. ","
     for g = 1, 3 do

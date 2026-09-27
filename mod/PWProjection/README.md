@@ -1,4 +1,4 @@
-# PWBlueprint — Palworld 蓝图投影 mod
+# PWProjection — Palworld 蓝图投影 mod
 
 > 给 Palworld 加一个 **Litematica 式**的蓝图/投影功能：
 > 把基地存成蓝图、在任意位置以半透明幽灵形式投影出来、随时挪动、**一层一层看**。
@@ -19,7 +19,7 @@
 | **2** | 按键（一页速查 + 方向键模式 + 材质对照表） |
 | **3** | 文件位置 —— **模组必需文件清单（3.1）** · 运行时输出（3.2） |
 | **4** | 安全设计（为什么这个 mod 崩不了游戏）—— **屏幕提示与探测（4.6）** |
-| **5** | 配置 `pwbp_config.json` |
+| **5** | 配置 `pwpr_config.json` |
 | **6** | 崩了怎么办（崩溃归因流程 + 症状速查表） |
 | **7** | 蓝图格式 |
 | **8** | 分层展示到底会分成什么样（重要预期管理） |
@@ -51,8 +51,8 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1            # 真正部署
 
 部署脚本会：
 
-1. 把 `Scripts\*.lua` 复制到 `<游戏>\Mods\NativeMods\UE4SS\Mods\PWBlueprint\Scripts\`
-2. 在 `mods.txt` 里启用 `PWBlueprint`（幂等，可反复跑）
+1. 把 `Scripts\*.lua` 复制到 `<游戏>\Mods\NativeMods\UE4SS\Mods\PWProjection\Scripts\`
+2. 在 `mods.txt` 里启用 `PWProjection`（幂等，可反复跑）
 3. 顺手清理已废弃的 `PWRecon` / `PWKeyTest`
 4. 打开 `EnableHotReloadSystem`
 
@@ -81,14 +81,14 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1            # 真正部署
 > 游戏内的中文提示正在做（待办 1）：现在默认已开启**控制台通道**，
 > 想要游戏内文字要按 `O` 探测一次，见 4.6。
 >
-> 不打开也能用，但你就只能事后去看 `Scripts\pwbp.log`（中文、完整）。
+> 不打开也能用，但你就只能事后去看 `Scripts\pwpr.log`（中文、完整）。
 
 ```
 ① 打开 UE4SS 调试窗口（见上）
 ② 站到基地里  →  按 Y        采集"玩家附近"的基地 → 生成蓝图
 ③             →  按 J        加载刚采集的蓝图
 ④             →  按 N        渲染能力探测（S3）
-⑤  把 pwbp_config.json 里的 ghost_enabled 改成 true
+⑤  把 pwpr_config.json 里的 ghost_enabled 改成 true
 ⑥             →  按 F8       重载配置（不用重启游戏）
 ⑦             →  按 K        放投影
 
@@ -117,7 +117,7 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1            # 真正部署
 | 多网格建筑 | ✅ | 简约门（3 件）、帕鲁装扮机（2 件） |
 | **朝向正确性** | ✅ | 矿车方向已修（组件索引方案） |
 | **网格映射** | ✅ | **80 条，与游戏自报数据零冲突** |
-| **屏幕提示（策略层 + 控制台通道）** | ✅ **实测通过（2026-09-27）** | 一次游玩生成 **12 条** `> ` 提示（采集/加载/放置/换层/模式…），见 `pwbp.log` |
+| **屏幕提示（策略层 + 控制台通道）** | ✅ **实测通过（2026-09-27）** | 一次游玩生成 **12 条** `> ` 提示（采集/加载/放置/换层/模式…），见 `pwpr.log` |
 | 按键表单一来源 | ✅ **实测通过** | `F7` 的表由 `Notify.KEYS` 生成（待办 5 的一半） |
 | `O` 屏幕提示通道探测（S9） | 🟡 **第 1 步通过；第 2 步曾崩，已修待重跑** | 第 1 步拿到真实控制器 `BP_PalPlayerController_C`；第 2 步（反射枚举）崩游戏 → **该接口已永久禁用并做成检查项**，见 4.6 |
 | 屏幕提示（游戏内中文） | ⬜ **还没做** | 两条路：① `GraphicsAPI = dx11` 让调试窗口盖在游戏上（**今天就能用**）② 先按 `O` 探测出可用的游戏内通道 |
@@ -135,7 +135,7 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1            # 真正部署
 投影渲染需要的每个引擎原语都已实测可用：`World:SpawnActor` 造宿主 Actor、
 `AddComponentByClass` 造组件、`SetStaticMesh` / `SetSkeletalMesh` /
 `SetMaterial`、`K2_SetRelativeTransform`、`AddInstance(tf, false)`（局部空间）、
-`ClearInstances`、`K2_DestroyActor`。完整记录见游戏目录下的 `Scripts\pwbp_probe.txt`。
+`ClearInstances`、`K2_DestroyActor`。完整记录见游戏目录下的 `Scripts\pwpr_probe.txt`。
 
 ### 1.5 卸载 / 回滚 / 临时停用
 
@@ -144,7 +144,7 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1            # 真正部署
 | 你想做的事 | 命令 | 效果 |
 |---|---|---|
 | **临时停用**（崩溃归因用） | `deploy.ps1 -Disable` | **只把 `mods.txt` 里的 1 改成 0**，不动任何文件。再跑一次 `deploy.ps1` 就恢复 |
-| **完全卸载** | `deploy.ps1 -Rollback` | 从 `mods.txt` 移除条目 + **删掉** `Mods\PWBlueprint\` 整个目录 |
+| **完全卸载** | `deploy.ps1 -Rollback` | 从 `mods.txt` 移除条目 + **删掉** `Mods\PWProjection\` 整个目录 |
 | 先看会改什么 | `deploy.ps1 -DryRun` | 只打印，不落盘 |
 
 ```powershell
@@ -155,23 +155,23 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1 -Rollback   # 完全卸载
 
 > **卸载不会动存档。** 这个 mod 只在内存里生成投影用的临时 Actor，
 > 收起投影（`K`）时就已销毁，**从不写入存档**。
-> 卸载后残留的只有 `Mods\PWBlueprint\` 里的日志和蓝图 JSON ——
+> 卸载后残留的只有 `Mods\PWProjection\` 里的日志和蓝图 JSON ——
 > `-Rollback` 会连目录一起删掉。
 
 **手动卸载**（不想用脚本时）：
 
-1. 删除 `<游戏>\Mods\NativeMods\UE4SS\Mods\PWBlueprint\` 整个目录
-2. 编辑 `<游戏>\Mods\NativeMods\UE4SS\Mods\mods.txt`，删掉 `PWBlueprint : 1` 那一行
+1. 删除 `<游戏>\Mods\NativeMods\UE4SS\Mods\PWProjection\` 整个目录
+2. 编辑 `<游戏>\Mods\NativeMods\UE4SS\Mods\mods.txt`，删掉 `PWProjection : 1` 那一行
 3. 完事 —— 没有别的残留（不改 pak、不改存档、不改 UE4SS 本体）
 
-> **为什么可以放心删**：mod 是纯 UE4SS Lua，所有代码都在 `Mods\PWBlueprint\Scripts\`
+> **为什么可以放心删**：mod 是纯 UE4SS Lua，所有代码都在 `Mods\PWProjection\Scripts\`
 > 下，配置和蓝图也在这个目录里。UE4SS 只按 `mods.txt` 加载，删了就不执行。
 
 ---
 
 ## 2. 按键
 
-> **本节和游戏里按 `F7` 看到的表，都来自 `pwbp_notify.lua` 的 `Notify.KEYS` 一张表**
+> **本节和游戏里按 `F7` 看到的表，都来自 `pwpr_notify.lua` 的 `Notify.KEYS` 一张表**
 > （单一来源，见 4.6 最后一段）。加键/改名只改那一处。
 
 ### 一页速查
@@ -179,7 +179,7 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1 -Rollback   # 完全卸载
 | 键 | 作用 |
 |---|---|
 | `F7` | 帮助 / 当前状态（**含当前材质档、方向键模式、屏幕提示通道**） |
-| `F8` | 重载 `pwbp_config.json` |
+| `F8` | 重载 `pwpr_config.json` |
 | `F9` | **切换方向键模式**（`move` / `rotate` / `material`） |
 | `Y` | 采集：玩家附近 → 蓝图 |
 | `U` | 采集：全部建筑 → 一张蓝图 |
@@ -204,7 +204,7 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1 -Rollback   # 完全卸载
 | 键 | 作用 |
 |---|---|
 | `F7` | 帮助 / 当前状态（会写进日志） |
-| `F8` | **重载 `pwbp_config.json`**（改完配置不用重启游戏） |
+| `F8` | **重载 `pwpr_config.json`**（改完配置不用重启游戏） |
 | `Y` | 采集：玩家附近（半径见配置 `capture_radius_m`，默认 150 米） |
 | `U` | 采集：**全部**建筑（把整个存档所有据点存成一张蓝图） |
 | `J` | 蓝图库：切到下一张并加载 |
@@ -212,7 +212,7 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1 -Rollback   # 完全卸载
 | `L` | 投影：**切分层**（全部层 → 第 0 层 → 第 1 层 → … → 全部层） |
 | `H` | 投影：重新吸附到玩家当前位置（清掉偏移与旋转） |
 | `N` | 渲染能力探测（S3）—— 第一次用投影前必须跑一次 |
-| `O` | 屏幕提示通道探测（S9）—— 查"能不能在游戏画面上显示文字"，结果写 `pwbp_ui.txt`（见 4.6） |
+| `O` | 屏幕提示通道探测（S9）—— 查"能不能在游戏画面上显示文字"，结果写 `pwpr_ui.txt`（见 4.6） |
 
 ### 放置微调 —— **方向键 + 模式**（不需要任何修饰键组合）
 
@@ -268,7 +268,7 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1 -Rollback   # 完全卸载
 | 3 | `dismantle` | 黄色（建造即将完成） | `MI_LooksPredicatorDismantle` | `F9` 进 material，按 `→` |
 | 4 | `original` | 原始彩色（不覆盖材质） | 网格自带材质 | `F9` 进 material，按 `→` |
 
-**另外 4 档不在循环里**，但把名字写进 `pwbp_config.json` 的 `ghost_material`
+**另外 4 档不在循环里**，但把名字写进 `pwpr_config.json` 的 `ghost_material`
 再按 `F8` 就能用：
 
 | 模式名 | 观感 | 材质资产 |
@@ -279,11 +279,11 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1 -Rollback   # 完全卸载
 | `beforefix` | 修复前态 | `MI_LooksPredicatorBeforeFix` |
 
 > 这 8 个都不是猜的 —— 来自**游戏自己导出的材质清单**
-> （`pwbp_meshes.txt` 第 4 节，按 `Y` 采集时重新导出，
+> （`pwpr_meshes.txt` 第 4 节，按 `Y` 采集时重新导出，
 > 那份清单共列出 15 个建筑相关材质）。
 
 **怎么知道自己现在用的是哪档**：按 `F9` 时控制台会打一行纯 ASCII 的
-`[PWBP] material = building  [BLUE   (default)]`（可读，不是 `?`）；
+`[PWPR] material = building  [BLUE   (default)]`（可读，不是 `?`）；
 按 `F7` 也会列出当前档和完整候选表。
 
 也可以直接改配置里的 `ghost_material`，然后按 `F8`（或按 `F9` 让方向键进入
@@ -307,21 +307,21 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1 -Rollback   # 完全卸载
 | 文件 | 作用 | 被谁依赖 |
 |---|---|---|
 | **`main.lua`** | 入口：按键绑定、流程编排 | 游戏加载它 |
-| `pwbp_util.lua` | 基础设施：对象读取、变换、路径 | 被 10 处引用（最底层） |
-| `pwbp_json.lua` | 手写 JSON 编解码 | 被 4 处引用 |
-| `pwbp_log.lua` | 日志（UTF-8，中文正常） | 被 4 处引用 |
-| `pwbp_config.lua` | 配置读写 + 默认值迁移 | 被 6 处引用 |
-| `pwbp_sched.lua` | 游戏主线程调度 | 被 2 处引用 |
-| **`pwbp_hud.lua`** | **屏幕文字【通道层】**：把一行字送到画面上。**只调用探测验证过的通道**（见 4.6） | 被 3 处引用 |
-| **`pwbp_notify.lua`** | **屏幕提示【策略层】**：什么时候提示、提示什么、节流。**纯 Lua，不碰引擎**。也是按键表的**单一来源**（见 2.0） | 被 2 处引用 |
-| `pwbp_bp.lua` | 蓝图数据模型：包围盒、相对坐标、分层 | 被 5 处引用 |
-| `pwbp_capture.lua` | 扫描建筑 → 生成蓝图（`Y` / `U`） | `main` |
-| `pwbp_library.lua` | 蓝图库（`J` 切换） | `main` |
-| `pwbp_meshmap.lua` | 类型 → 网格资产解析 | 被 3 处引用 |
-| `pwbp_ghost.lua` | 投影渲染（`K` / 微调 / 材质 / 分层） | `main` |
-| `pwbp_session.lua` | 当前会话状态 | `main` |
-| `pwbp_probe.lua` | 渲染能力探测（`N`）+ 屏幕提示通道探测（`O`）→ 生成门禁依据 | 被 2 处引用 |
-| `pwbp_meshmap.default.json` | **内置映射表 80 条**（部署时被覆盖成最新） | `pwbp_meshmap.lua` |
+| `pwpr_util.lua` | 基础设施：对象读取、变换、路径 | 被 10 处引用（最底层） |
+| `pwpr_json.lua` | 手写 JSON 编解码 | 被 4 处引用 |
+| `pwpr_log.lua` | 日志（UTF-8，中文正常） | 被 4 处引用 |
+| `pwpr_config.lua` | 配置读写 + 默认值迁移 | 被 6 处引用 |
+| `pwpr_sched.lua` | 游戏主线程调度 | 被 2 处引用 |
+| **`pwpr_hud.lua`** | **屏幕文字【通道层】**：把一行字送到画面上。**只调用探测验证过的通道**（见 4.6） | 被 3 处引用 |
+| **`pwpr_notify.lua`** | **屏幕提示【策略层】**：什么时候提示、提示什么、节流。**纯 Lua，不碰引擎**。也是按键表的**单一来源**（见 2.0） | 被 2 处引用 |
+| `pwpr_bp.lua` | 蓝图数据模型：包围盒、相对坐标、分层 | 被 5 处引用 |
+| `pwpr_capture.lua` | 扫描建筑 → 生成蓝图（`Y` / `U`） | `main` |
+| `pwpr_library.lua` | 蓝图库（`J` 切换） | `main` |
+| `pwpr_meshmap.lua` | 类型 → 网格资产解析 | 被 3 处引用 |
+| `pwpr_ghost.lua` | 投影渲染（`K` / 微调 / 材质 / 分层） | `main` |
+| `pwpr_session.lua` | 当前会话状态 | `main` |
+| `pwpr_probe.lua` | 渲染能力探测（`N`）+ 屏幕提示通道探测（`O`）→ 生成门禁依据 | 被 2 处引用 |
+| `pwpr_meshmap.default.json` | **内置映射表 80 条**（部署时被覆盖成最新） | `pwpr_meshmap.lua` |
 
 **另外三个不复制进游戏目录的**：
 
@@ -331,7 +331,7 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1 -Rollback   # 完全卸载
 | `README.md` | 本文档（主手册） |
 | **`已知限制.md`** | ★ **画不出来 / 只画出一部分 / 看起来一样但其实正常** 的建筑清单。**发现新问题就往这里加一行** |
 
-**一个例外**：`pwbp_meshmap.json`（用户自己的映射表）**不在部署清单里**，
+**一个例外**：`pwpr_meshmap.json`（用户自己的映射表）**不在部署清单里**，
 它由脚本在游戏目录**按需创建一次**，之后部署**绝不覆盖** —— 你手写的条目永远不会丢。
 
 ### 3.2 运行时输出
@@ -339,19 +339,19 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1 -Rollback   # 完全卸载
 部署之后，所有输出都在：
 
 ```
-<游戏>\Mods\NativeMods\UE4SS\Mods\PWBlueprint\Scripts\
-    pwbp_config.json          配置（中文注释版在本文档第 5 节）
-    pwbp.log                  运行日志（UTF-8，中文正常）
+<游戏>\Mods\NativeMods\UE4SS\Mods\PWProjection\Scripts\
+    pwpr_config.json          配置（中文注释版在本文档第 5 节）
+    pwpr.log                  运行日志（UTF-8，中文正常）
                               以 "> " 开头的那行 = 玩家当时在屏幕上看到的那一行
-    pwbp_probe.txt            渲染能力探测（N）逐步骤记录
-    pwbp_ui.txt               ★ 屏幕提示通道探测（O）报告：函数名 + 参数签名 + 类名枚举
-    pwbp_capabilities.json    渲染能力探测结论（投影的门禁依据；O 绝不写这个文件）
-    pwbp_meshes.txt           静态网格注册表 + 每个类型的匹配结果
-    pwbp_meshmap.default.json 内置映射表（**80 条**，每次部署都会更新成最新）
-    pwbp_meshmap.json         你自己的映射表（**部署时绝不覆盖**，优先级更高）
+    pwpr_probe.txt            渲染能力探测（N）逐步骤记录
+    pwpr_ui.txt               ★ 屏幕提示通道探测（O）报告：函数名 + 参数签名 + 类名枚举
+    pwpr_capabilities.json    渲染能力探测结论（投影的门禁依据；O 绝不写这个文件）
+    pwpr_meshes.txt           静态网格注册表 + 每个类型的匹配结果
+    pwpr_meshmap.default.json 内置映射表（**80 条**，每次部署都会更新成最新）
+    pwpr_meshmap.json         你自己的映射表（**部署时绝不覆盖**，优先级更高）
                               特殊值 `"-"` 表示"这个类型不要画"
 
-<游戏>\Mods\NativeMods\UE4SS\Mods\PWBlueprint\blueprints\
+<游戏>\Mods\NativeMods\UE4SS\Mods\PWProjection\blueprints\
     index.txt                 蓝图索引
     base_-1041_417.blueprint.json    采集出来的蓝图
     all_....blueprint.json
@@ -359,7 +359,7 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1 -Rollback   # 完全卸载
 
 控制台输出在 `<游戏>\Mods\NativeMods\UE4SS\UE4SS.log`。
 
-> 控制台只吃 ASCII，中文会变 `????`。**要看中文请打开 `pwbp.log`。**
+> 控制台只吃 ASCII，中文会变 `????`。**要看中文请打开 `pwpr.log`。**
 
 ---
 
@@ -379,10 +379,10 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1 -Rollback   # 完全卸载
 
 ### 4.2 S4 的双重门禁
 
-`pwbp_ghost` 只有在**两个条件同时满足**时才会执行任何创建操作：
+`pwpr_ghost` 只有在**两个条件同时满足**时才会执行任何创建操作：
 
-1. `pwbp_config.json` 里 `ghost_enabled = true`（默认 `false`）
-2. `pwbp_capabilities.json` 里 `spawn_host` / `add_ism_component` /
+1. `pwpr_config.json` 里 `ghost_enabled = true`（默认 `false`）
+2. `pwpr_capabilities.json` 里 `spawn_host` / `add_ism_component` /
    `set_static_mesh` / `add_instance` / `get_world` 全部为 `ok: true`
 
 **"没探测过就渲染"在结构上不可能发生。**
@@ -402,14 +402,14 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1 -Rollback   # 完全卸载
 
 ### 4.4 崩溃点定位：探测每一步都先落盘
 
-能力探测每一步**执行前**先把 `STEP n START` 写进 `pwbp_probe.txt`。
+能力探测每一步**执行前**先把 `STEP n START` 写进 `pwpr_probe.txt`。
 
 > 如果游戏崩了，文件里**最后一条 START 就是崩溃点** —— 没有歧义。
 
 **2026-09-26 18:15 正是靠它一次定位到崩溃点**：文件里 1–27 步全有结果，
 第 28 步只有 START 没有结果 → 第 28 步就是崩溃点。
 
-而且能力表现在**每一步之后**都会写一次 `pwbp_capabilities.json` ——
+而且能力表现在**每一步之后**都会写一次 `pwpr_capabilities.json` ——
 之前是全部跑完才写，结果第 28 步一崩，27 步的成果全丢了，白测一轮。
 
 用 `probe_max_step`（配置项）可以只跑到第 N 步就停；
@@ -454,10 +454,10 @@ Palworld 是 Shipping 构建，UE 把 `KismetSystemLibrary::PrintString` 里
 
 | 文件 | 层 | 职责 | 碰引擎吗 |
 |---|---|---|---|
-| `pwbp_notify.lua` | 策略层 | 提示什么、什么时候提示、节流、按键表 | **不碰**（纯 Lua） |
-| `pwbp_hud.lua` | 通道层 | 把一行字真的送到画面上 | 只在探测通过后碰 |
+| `pwpr_notify.lua` | 策略层 | 提示什么、什么时候提示、节流、按键表 | **不碰**（纯 Lua） |
+| `pwpr_hud.lua` | 通道层 | 把一行字真的送到画面上 | 只在探测通过后碰 |
 
-`pwbp_hud.lua` 里**没有任何"偷偷试一下"的调用**：
+`pwpr_hud.lua` 里**没有任何"偷偷试一下"的调用**：
 非控制台通道必须**在本次会话里探测通过**才允许发送，
 否则直接退回控制台。所以"屏幕提示"这个功能本身**不可能把游戏搞崩**。
 
@@ -552,7 +552,7 @@ Palworld 是 Shipping 构建，UE 把 `KismetSystemLibrary::PrintString` 里
 > 安全替代是**本项目用了几个月的**两种操作：
 > **`FindAllOf("精确类名")`** 和 **`obj.方法名` 存在性查询**。
 
-按 `O` 会跑一段探测（7 步），把结果写进 `pwbp_ui.txt`。
+按 `O` 会跑一段探测（7 步），把结果写进 `pwpr_ui.txt`。
 **步骤顺序 = 风险从低到高**（以前把最危险的放在第 2 步，结果后面全没跑到）：
 
 | 步 | 干什么 | 风险 |
@@ -565,7 +565,7 @@ Palworld 是 Shipping 构建，UE 把 `KismetSystemLibrary::PrintString` 里
 | `s9_channels` | 逐通道探测"有没有"，**不发任何文字**（会先自动重读配置） | 零 |
 | `s9_send_test` | ★ 唯一会真的发字的步骤 | 高 → **只在开了高风险通道时才执行** |
 
-> **按 `O` 会自动重读 `pwbp_config.json`** —— 不用先按 `F8` 了。
+> **按 `O` 会自动重读 `pwpr_config.json`** —— 不用先按 `F8` 了。
 > （2026-09-27 实测踩到：改了配置直接按 `O`，探测里那条通道仍显示"默认关"。）
 
 **`s9_candidates` 里的"候选名单"不是瞎猜**：
@@ -587,7 +587,7 @@ Palworld 是 Shipping 构建，UE 把 `KismetSystemLibrary::PrintString` 里
 
 | 结论 | 证据 |
 |---|---|
-| ✅ **`FText` 中文完全可用** | `ASCII 构造: OK 回读 PWBP-TEST` / `中文构造: OK **回读: 蓝图投影**` —— 中文进得去也读得回来 |
+| ✅ **`FText` 中文完全可用** | `ASCII 构造: OK 回读 PWPR-TEST` / `中文构造: OK **回读: 蓝图投影**` —— 中文进得去也读得回来 |
 | ✅ **UMG 库可用** | `/Script/UMG.Default__WidgetBlueprintLibrary: 可用`，`lib:Create 存在` |
 | ✅ **`FindAllOf` 能查到 UMG 控件** | `WBP_Notice_C` → **1 个实例**，资产在 `/Game/Pal/Blueprint/UI/UserInterface/InGame/Notice/WBP_Notice` |
 | ✓ **通知系统叫 `Notice`** | 就是本节 `notice_text` 通道的目标 |
@@ -649,7 +649,7 @@ GraphicsAPI = dx11
 
 #### 顺带解决待办 5 的一半：按键表现在只有一个来源
 
-按键表在 `pwbp_notify.lua` 的 `Notify.KEYS` 里**只写一份**，
+按键表在 `pwpr_notify.lua` 的 `Notify.KEYS` 里**只写一份**，
 按 `F7` 看到的表就是从它生成的（以前帮助文案里手抄一份、
 控制台又抄一份，加个键得改三处，迟早不一致）。
 "能在游戏里看到按键表"这一半已经完成；**改键**（配置 `keybinds`）还没做。
@@ -659,7 +659,7 @@ GraphicsAPI = dx11
 
 ---
 
-## 5. 配置（`pwbp_config.json`）
+## 5. 配置（`pwpr_config.json`）
 
 | 键 | 默认 | 说明 |
 |---|---|---|
@@ -688,7 +688,7 @@ GraphicsAPI = dx11
 | `notify_autohide` | **`false`** | 自己的控件是否几秒后自动收起。**排查阶段保持 `false`** —— 免得"刚好错过那 4 秒"；确认能看见后再改 `true` |
 | `notify_probe_grep` | `""` | ★ 按内容反查控件：把屏幕上看到的一段文字填进来，按 `O` 会回读所有活文本控件并**指出是哪个控件在显示它** |
 | `notify_allow_named_1arg` | `false` | ⚠️ **高风险**：允许调用 `notify_func` 指定的函数（只给 1 个字符串参数） |
-| `notify_func` | `""` | `notify_allow_named_1arg` 用的函数名，从 `pwbp_ui.txt` 里抄 |
+| `notify_func` | `""` | `notify_allow_named_1arg` 用的函数名，从 `pwpr_ui.txt` 里抄 |
 | `probe_max_step` | `0` | 探测只跑到第 N 步（`0` = 全部跑） |
 | `hook_load_map_pre` | **`false`** | 换地图时丢弃引用（见下） |
 | `library_scan_on_refresh` | **`false`** | 是否用 `io.popen` 扫蓝图目录（见下） |
@@ -717,11 +717,11 @@ GraphicsAPI = dx11
 
 ### 步骤 1：确认"我们的代码到底跑了没有"
 
-看 `<游戏>\Mods\NativeMods\UE4SS\UE4SS.log`，搜 `[PWBP]`：
+看 `<游戏>\Mods\NativeMods\UE4SS\UE4SS.log`，搜 `[PWPR]`：
 
 - 只有启动那段（`bound: ...`）→ **一个热键都没被按到**
 - 出现了 `>> capture-near` 但没有对应的 `<< capture-near`
-  → 崩在**采集处理函数里面**（这时 `pwbp.log` 会告诉你扫到第几件）
+  → 崩在**采集处理函数里面**（这时 `pwpr.log` 会告诉你扫到第几件）
 - 出现了完整的 `>> ... << ...` → 那次按键**正常跑完了**，崩溃与它无关
 
 > 这就是为什么每个热键都会打 `>> 名字`（在**按键那一刻**同步打印）
@@ -753,7 +753,7 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1
   （它只装了 `BlueprintResearch.pak`、没装配套 Lua，ModActor 仍在每个关卡生成）：
   把 `Pal\Content\Paks\LogicMods\BlueprintResearch.pak` 改名加 `.off` 再试。
   再下一个嫌疑人是 `FirstPerson`（每次崩溃前都有它的 `[FOV] ... world reload`）。
-- **不崩了** → 是我们。把 `pwbp.log` + `UE4SS.log` + 崩溃目录发出来。
+- **不崩了** → 是我们。把 `pwpr.log` + `UE4SS.log` + 崩溃目录发出来。
 
 ### 症状速查（看到什么 → 是什么问题）
 
@@ -761,11 +761,11 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1
 |---|---|---|
 | 投影是**浅色黑白格子**（灰模） | 材质是设上了 —— 那是 `MI_LooksPredicatorNormal` 本身的样子 | 按小键盘 `*` 换材质，见第 8 节 |
 | 投影**浮空**（整层悬在地面上方） | 玩家 Actor 原点在胶囊体中心，不是脚底 | `player_feet_offset_cm` 填 `90` 左右；日志里有 `脚底偏移:` 一行 |
-| 某件建筑**形状不对**（张冠李戴） | 自动名字匹配给错了 —— 尤其当正确资产不在 `/Architecture/` 下时会必然出错 | 在 `pwbp_meshmap.json` 里写死正确路径，或写 `"-"` 不画。**帕鲁终端就是这样修好的**（正确资产在 `/Game/Pal/Model/Other/PalBox/SM_PalBox`） |
-| 投影**只显示了一部分** | 那些类型没解析到网格资产 | `pwbp.log` 的 `缺网格=N`；`pwbp_meshes.txt` 第 3 节逐类型说明为什么 |
+| 某件建筑**形状不对**（张冠李戴） | 自动名字匹配给错了 —— 尤其当正确资产不在 `/Architecture/` 下时会必然出错 | 在 `pwpr_meshmap.json` 里写死正确路径，或写 `"-"` 不画。**帕鲁终端就是这样修好的**（正确资产在 `/Game/Pal/Model/Other/PalBox/SM_PalBox`） |
+| 投影**只显示了一部分** | 那些类型没解析到网格资产 | `pwpr.log` 的 `缺网格=N`；`pwpr_meshes.txt` 第 3 节逐类型说明为什么 |
 | `网格覆盖表: 覆盖表 N 条` 的 N 比预期小 | 覆盖表没更新成功 | 现在分两个文件，`内置表` 会每次部署更新；看日志里 `内置表/用户表` 两段 |
 | 按键**完全没反应** | 键没绑上 / 没按到 | `UE4SS.log` 搜 `>> 名字`。连 `>>` 都没有 = 没按到 |
-| 按了键、日志有 `>>` 但没有 `<<` | 崩在那个处理函数里面 | `pwbp_probe.txt` 最后一条 `START`（探测时） |
+| 按了键、日志有 `>>` 但没有 `<<` | 崩在那个处理函数里面 | `pwpr_probe.txt` 最后一条 `START`（探测时） |
 | 提示 `attempt to index a nil value (global X)` | Lua 的 `local` 声明写在了使用之后 | 日志会直接给文件:行号；见 `docs/踩坑记录.md` 第 13 节 |
 | 游戏在读档/进世界时崩 | 与世界加载相关的既有问题，多半不是本 mod | 按上面步骤 3 用 `-Disable` 做一次隔离实验 |
 
@@ -847,7 +847,7 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1
 Palworld 为性能考虑，**结构件（地基/墙/屋顶…）在 `PalBuildObject` 上读不到 mesh** ——
 它们由 `BP_PalStaticMeshImposterChunk` 的 HISM 批量绘制。
 
-**从游戏里导出的真实资产清单**（`pwbp_meshes.txt`，2310 个网格，
+**从游戏里导出的真实资产清单**（`pwpr_meshes.txt`，2310 个网格，
 其中 150 个在 `/Architecture/` 下）显示，结构件只有 8 个资产：
 
 | 蓝图类型 | 真实资产 | 怎么来的 |
@@ -860,7 +860,7 @@ Palworld 为性能考虑，**结构件（地基/墙/屋顶…）在 `PalBuildObj
 | `Wood_Stair` | `SM_Stair_Wood` | 自动匹配 |
 | `Stone_WallGate` | `SM_WallGate_Stone` | 自动匹配 |
 
-**这 7 条已经写死在 `pwbp_meshmap.json` 里**，不依赖猜测。
+**这 7 条已经写死在 `pwpr_meshmap.json` 里**，不依赖猜测。
 
 三处关键修正（都是被真实数据教出来的）：
 
@@ -878,21 +878,21 @@ Palworld 为性能考虑，**结构件（地基/墙/屋顶…）在 `PalBuildObj
 ### 怎么查"还有哪些类型画不出来"
 
 ```powershell
-$bp = "<游戏>\Mods\NativeMods\UE4SS\Mods\PWBlueprint\blueprints"
+$bp = "<游戏>\Mods\NativeMods\UE4SS\Mods\PWProjection\blueprints"
 
 # ① 审计：用【真实优先级链】(actor 网格 > 覆盖表 > 名字匹配) 逐类型列出最终画什么
-python tools/meshmatch_sim.py --audit --mapdir mod\PWBlueprint\Scripts --blueprints $bp
+python tools/meshmatch_sim.py --audit --mapdir mod\PWProjection\Scripts --blueprints $bp
 
 # ② 对比：把"游戏自报的网格"和"我们的覆盖表"做 diff
 #    会列出【新增】（还没映射的）和【冲突】（我们猜错的）
-python tools/meshmatch_sim.py --emit-overrides --blueprints $bp --mapdir mod\PWBlueprint\Scripts
+python tools/meshmatch_sim.py --emit-overrides --blueprints $bp --mapdir mod\PWProjection\Scripts
 
 # ③ 孤儿资产：/Architecture/ 下没有任何类型用到的网格
 #    用来判断"看不见的类型"到底是【缺映射】还是【根本缺资产】
-python tools/meshmatch_sim.py --orphans --mapdir mod\PWBlueprint\Scripts --blueprints $bp
+python tools/meshmatch_sim.py --orphans --mapdir mod\PWProjection\Scripts --blueprints $bp
 ```
 
-> `--mapdir` 必须指向**工作区**里的 `mod/PWBlueprint/Scripts`，
+> `--mapdir` 必须指向**工作区**里的 `mod/PWProjection/Scripts`，
 > 否则读的是游戏里那份旧拷贝，审计结果会不对（这个坑踩过）。
 > `--blueprints` 指向游戏里真实采集出来的蓝图目录 ——
 > 里面的 `stats.types[].mesh` 是**游戏自己报的**，是最权威的标准答案。
@@ -957,31 +957,31 @@ python tools/meshmatch_sim.py --orphans --mapdir mod\PWBlueprint\Scripts --bluep
 
 **第 1 步：站在那栋建筑旁边，按 `Y` 重新采集**
 
-采集会把两件东西写到 `Scripts\pwbp_meshes.txt`：
+采集会把两件东西写到 `Scripts\pwpr_meshes.txt`：
 - 第 1 节：**当前会话加载的全部静态网格**（短名 + 完整路径）
 - 第 2 / 3 节：每个类型的**匹配结果和读取诊断**
 
 **第 2 步：找到那个类型的短名**
 
-看 `pwbp.log` 里采集摘要的那一行：
+看 `pwpr.log` 里采集摘要的那一行：
 
 ```
 网格解析: 直接命中 11 / 覆盖表 36 / 名字匹配 4 / 未解析 13
 ```
 
-`未解析` 的那些就是画不出来的。具体是哪几个，看 `pwbp_meshes.txt` 第 2 节
+`未解析` 的那些就是画不出来的。具体是哪几个，看 `pwpr_meshes.txt` 第 2 节
 （匹配到 `-` 的行）或第 3 节（有"说明"列告诉你为什么读不到）。
 
 **第 3 步：找到它的网格资产路径，写进映射表**
 
-在 `pwbp_meshes.txt` **第 1 节**里搜关键字（目录名往往就是建筑名）：
+在 `pwpr_meshes.txt` **第 1 节**里搜关键字（目录名往往就是建筑名）：
 
 ```
 SM_PalCage      /Game/Pal/Model/Other/PalCage/SM_PalCage.SM_PalCage
 SM_MatingStation /Game/Pal/Model/Prop/Architecture/PalMatingStation/SM_MatingStation...
 ```
 
-然后编辑 `Scripts\pwbp_meshmap.json`（**用户表，部署时绝不覆盖**）：
+然后编辑 `Scripts\pwpr_meshmap.json`（**用户表，部署时绝不覆盖**）：
 
 ```json
 {
@@ -996,7 +996,7 @@ SM_MatingStation /Game/Pal/Model/Prop/Architecture/PalMatingStation/SM_MatingSta
 
 ### 10.3 "整个注册表里也搜不到"意味着什么
 
-如果 `pwbp_meshes.txt` 第 1 节（全量注册表）里**搜不到**任何能对上的资产，
+如果 `pwpr_meshes.txt` 第 1 节（全量注册表）里**搜不到**任何能对上的资产，
 那就不是映射问题，而是**资产本身不可用**：这栋建筑在当前会话没有可读的
 独立网格 —— 和结构件一样由 HISM 批量绘制，或者它的网格根本没被加载。
 
@@ -1013,7 +1013,7 @@ SM_MatingStation /Game/Pal/Model/Prop/Architecture/PalMatingStation/SM_MatingSta
 | 高等文明武器工厂 | `WeaponFactory_Dirty_4`（推测） | 注册表里无候选 |
 
 > 类型短名的"推测"两字很重要：中文名 ↔ 内部类型名是我对照出来的，
-> 不保证一一对应。**准确做法是看 `pwbp.log` 的完整类型列表**（摘要里只显示前 10 个）。
+> 不保证一一对应。**准确做法是看 `pwpr.log` 的完整类型列表**（摘要里只显示前 10 个）。
 
 **已经穷尽验证过**（2026-09-26 深夜）：把范围放宽到
 `/Game/Pal/Model/Prop/` + `/Other/` 全部 126 个可建造相关网格，
@@ -1025,7 +1025,7 @@ MultiProduct / Recycler / WeaponFactory / SphereFactory）。
 （和结构件一样由 HISM 批量绘制，或者资产属于尚未加载的 pak）。
 
 > **候选是有的，但我不自动启用。** 那 66 个孤儿里挑出几个"名字可能对得上"的，
-> 全部记在 `pwbp_meshmap.json` 头部注释的 `_cand_*` 条目里（例如观赏笼 →
+> 全部记在 `pwpr_meshmap.json` 头部注释的 `_cand_*` 条目里（例如观赏笼 →
 > `/Game/Pal/Model/Other/PalCage/SM_PalCage`）。
 > **想试就把那一行改成真条目 → 按 `F8` → 看形状对不对，10 秒验证一条。**
 >
@@ -1033,26 +1033,26 @@ MultiProduct / Recycler / WeaponFactory / SphereFactory）。
 > （`FarmBlockRecipe`、`Farm_SkillFruits`），所以新候选一律只记录不启用。
 
 **想补它们，唯一可靠的办法**：走到那些建筑旁边按 `Y`，然后看
-`pwbp_meshes.txt` 第 3 节的"有网格"列 —— 如果游戏自己报出了网格名，
+`pwpr_meshes.txt` 第 3 节的"有网格"列 —— 如果游戏自己报出了网格名，
 把完整路径填进映射表即可；如果还是 0，那就是真的没有独立网格。
 
 ### 10.4 用工具批量检查（可选，但更快）
 
 ```powershell
-$bp = "<游戏>\Mods\NativeMods\UE4SS\Mods\PWBlueprint\blueprints"
+$bp = "<游戏>\Mods\NativeMods\UE4SS\Mods\PWProjection\blueprints"
 
 # ⓪ 改完映射表先跑这个：查 JSON 语法错、重复键、路径形式错
-python tools/check_meshmap.py mod\PWBlueprint\Scripts
+python tools/check_meshmap.py mod\PWProjection\Scripts
 
 # ① 哪些类型会完全看不见
-python tools/meshmatch_sim.py --audit --mapdir mod\PWBlueprint\Scripts --blueprints $bp
+python tools/meshmatch_sim.py --audit --mapdir mod\PWProjection\Scripts --blueprints $bp
 
 # ② 游戏自报的网格 vs 我们的映射表：列出【新增】和【冲突】
-python tools/meshmatch_sim.py --emit-overrides --blueprints $bp --mapdir mod\PWBlueprint\Scripts
+python tools/meshmatch_sim.py --emit-overrides --blueprints $bp --mapdir mod\PWProjection\Scripts
 
 # ③ 孤儿资产：注册表里有、但没有任何类型用到的网格
 #    （用来判断"看不见"是缺映射还是缺资产）
-python tools/meshmatch_sim.py --orphans --mapdir mod\PWBlueprint\Scripts --blueprints $bp
+python tools/meshmatch_sim.py --orphans --mapdir mod\PWProjection\Scripts --blueprints $bp
 ```
 
 **② 最有用**：它直接告诉你"我们猜错了哪几条"。实测靠它抓到过 2 条错映射
@@ -1069,7 +1069,7 @@ component:K2_GetComponentRotation()      -- 已经把 actor 旋转和相对旋�
 -- 退回: actor 朝向 + 组件 RelativeRotation.Yaw
 ```
 
-采集诊断表（`pwbp_meshes.txt` 第 3 节）有一列 **`朝向差`** = 网格朝向 − actor 朝向。
+采集诊断表（`pwpr_meshes.txt` 第 3 节）有一列 **`朝向差`** = 网格朝向 − actor 朝向。
 非 0 说明这类建筑的网格组件带固定相对旋转。
 
 **2026-09-26 实测结果**（主基地 64 种类型）：
@@ -1112,15 +1112,15 @@ StaticMeshComponent /Game/Pal/Maps/MainWorld_5/.../PL_MainWorld5
 > 枚举世界上所有网格组件 → 从组件全名里解析出 `BP_BuildObject_<类型>_C`
 > → 读它用的 `StaticMesh` → **直接得到【类型 → 网格】对应关系**。
 
-**怎么看**：`pwbp_meshes.txt` **第 5 节**（每次按 `Y` 采集时导出）。
+**怎么看**：`pwpr_meshes.txt` **第 5 节**（每次按 `Y` 采集时导出）。
 最上面就是**可以直接抄的成品**：
 
 ```
-=== ★★★ 查到了、但覆盖表里【还没有】的类型（照着填进 pwbp_meshmap.json）===
+=== ★★★ 查到了、但覆盖表里【还没有】的类型（照着填进 pwpr_meshmap.json）===
   "WeaponFactory_Dirty_4": "/Game/Pal/Model/Prop/Architecture/XXX/SM_XXX.SM_XXX",
 ```
 
-把这几行直接粘贴进 `pwbp_meshmap.json` → 按 `F8` → 完成。
+把这几行直接粘贴进 `pwpr_meshmap.json` → 按 `F8` → 完成。
 
 下面还有一张完整的【建筑类型 → 网格】表，以及一条关键的自检标记：
 
@@ -1159,7 +1159,7 @@ StaticMeshComponent /Game/Pal/Maps/MainWorld_5/.../PL_MainWorld5
 | 朝向正确性 | ✅ | 用网格组件世界旋转，不用 actor 朝向 |
 | **网格映射** | ✅ | **80 条；主基地 72 种类型「未解析 0」** |
 | 崩溃安全 | ✅ | 探针分步落盘、门禁、永不用 `PrintString` |
-| **屏幕提示（策略层 + 控制台通道）** | ✅ **实测通过（2026-09-27）** | 一次游玩生成 **12 条** `> ` 提示（采集/加载/放置/换层/模式…），见 `pwbp.log` |
+| **屏幕提示（策略层 + 控制台通道）** | ✅ **实测通过（2026-09-27）** | 一次游玩生成 **12 条** `> ` 提示（采集/加载/放置/换层/模式…），见 `pwpr.log` |
 | 按键表单一来源 | ✅ **实测通过** | `F7` 的表由 `Notify.KEYS` 生成（待办 5 的一半） |
 
 ### 11.2 当前能力边界（诚实说明，不是 bug）
@@ -1201,7 +1201,7 @@ StaticMeshComponent /Game/Pal/Maps/MainWorld_5/.../PL_MainWorld5
 
 | 顺序 | 项 | 状态 | 说明 |
 |---|---|---|---|
-| 1 | **状态切换时的屏幕文本提示** | 🟡 **控制台通道已实测通过；游戏内文字待做** | 策略层/通道层已写好，一次游玩生成 12 条提示（`pwbp.log` 里 `> ` 开头的行）。游戏内文字两条路：`GraphicsAPI=dx11`（今天可用）或按 `O` 探测游戏内通道（**第 2 步的反射枚举曾崩游戏，已永久禁用**）。见 4.6 |
+| 1 | **状态切换时的屏幕文本提示** | 🟡 **控制台通道已实测通过；游戏内文字待做** | 策略层/通道层已写好，一次游玩生成 12 条提示（`pwpr.log` 里 `> ` 开头的行）。游戏内文字两条路：`GraphicsAPI=dx11`（今天可用）或按 `O` 探测游戏内通道（**第 2 步的反射枚举曾崩游戏，已永久禁用**）。见 4.6 |
 | 2 | **放置吸附** | ⬜ 未开始 | 投影挪到目标附近时自动对齐到蓝图位置，省掉逐格微调。见待办 2 |
 | 3 | **蓝图选择 / 导出 / 导入** | ⬜ 未开始 | 现在 `J` 只能顺序切；且抄别人的建筑不是一个存档。**已查证本 UE4SS 构建没给 Lua 开放 ImGui，所以第一版不做界面**：用"文件 + 编号选择"就够。见待办 4 |
 | 4 | **按键一览 + 改键** | 🟡 一览已完成 | "在游戏里看到按键表"**已完成**（`F7`，来自 `Notify.KEYS` 单一来源）；**改键还没做**（配 `keybinds` 表 + `F8` 重载，无依赖）。见待办 5 |
@@ -1247,7 +1247,7 @@ StaticMeshComponent /Game/Pal/Maps/MainWorld_5/.../PL_MainWorld5
 | **UE 函数用点号调用 = 崩溃** | `pc.Func(text)` 会把 `text` 当 `self` → 野指针 | 统一用 `obj:Func(...)`；动态名字必须写 `obj[name](obj, ...)` |
 
 **★ 2026-09-27 的实例（值得记住）**：
-`pwbp_notify.lua` 里写了 `function Notify.repeat()` ——
+`pwpr_notify.lua` 里写了 `function Notify.repeat()` ——
 `repeat` 是 Lua 的**保留字**，所以 `t.repeat` 是**语法错误**，
 整个文件都加载不了（症状本该是"mod 一行日志都不打、直接 init failed"）。
 

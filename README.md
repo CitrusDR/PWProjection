@@ -22,8 +22,8 @@
 >
 > **进度**：阶段 0（侦察）✅ · 阶段 1（蓝图格式+工具链）✅ ·
 > **阶段 2（自研 mod）✅ 代码完成，等实机验证** ——
-> `mod/PWBlueprint/` 已写好 14 个 Lua 模块，静态检查全绿（含 10 项 linter 自检）。
-> **下一步：部署 → 按 N 跑能力探测 → 把 `pwbp.log` 发回来。**
+> `mod/PWProjection/` 已写好 14 个 Lua 模块，静态检查全绿（含 10 项 linter 自检）。
+> **下一步：部署 → 按 N 跑能力探测 → 把 `pwpr.log` 发回来。**
 >
 > ⚠️ 已决定**自己写、不复用 Simple Building Blueprints 的代码**
 > （SBB 只作架构参考），理由见 [docs/改造SBB可行性评估.md](docs/改造SBB可行性评估.md)。
@@ -46,8 +46,8 @@ palworld-litematica/
 │  ├─ luacheck_selftest.py    ← 验证 luacheck 真能抓到会崩游戏的写法（10/10）
 │  ├─ cleanup.ps1             从游戏里清掉旧 mod
 │  └─ README.md
-├─ mod/PWBlueprint/            ★ 当前主线：蓝图投影 mod
-│  ├─ Scripts/*.lua           14 个模块（含 pwbp_probe / pwbp_ghost）
+├─ mod/PWProjection/            ★ 当前主线：蓝图投影 mod
+│  ├─ Scripts/*.lua           14 个模块（含 pwpr_probe / pwpr_ghost）
 │  ├─ deploy.ps1              一键部署（幂等，会顺手清理废弃 mod）
 │  └─ README.md               ← 用法、按键、配置、安全设计
 ├─ mod/PWRecon/                （已退役，保留供追溯）
@@ -75,9 +75,9 @@ palworld-litematica/
 
 | 功能 | 状态 |
 |---|---|
-| 添加/导出蓝图 | ✅ 已实现（**游戏内直接导出 JSON**，`mod/PWBlueprint` 按 Y/U） |
+| 添加/导出蓝图 | ✅ 已实现（**游戏内直接导出 JSON**，`mod/PWProjection` 按 Y/U） |
 | 加载蓝图 | ✅ 已实现（蓝图库 + `J` 循环切换） |
-| 半透明投影 | ✅ **代码完成**（`pwbp_ghost.lua`，受能力探测门禁保护） |
+| 半透明投影 | ✅ **代码完成**（`pwpr_ghost.lua`，受能力探测门禁保护） |
 | 移动投影 | ✅ **代码完成**（小键盘前后左右/上下/旋转，见 mod README） |
 | 分层展示 | ✅ **代码完成**（`L` 键循环，这是 SBB 没有的功能） |
 | 自动建造 | ❌ 明确不做（那是 SBB 的功能，本 mod 只做投影） |

@@ -1,5 +1,5 @@
 --[[ ===========================================================================
-  PWBP · probe  ——  渲染前置能力探测（阶段 S3）
+  PWPR · probe  ——  渲染前置能力探测（阶段 S3）
 
   为什么要有这个东西
   ------------------
@@ -8,13 +8,13 @@
 
   所以把"投影渲染"需要的每一个原语拆成一步，逐步执行、逐步落盘:
 
-      ★ 每一步【执行前】先把 "STEP n START" 写进 pwbp_probe.txt
+      ★ 每一步【执行前】先把 "STEP n START" 写进 pwpr_probe.txt
       ★ 每一步【执行后】再写结果
       ★ 于是如果游戏崩了，文件里最后那条 START 就是崩溃点
 
   这和 PWRecon 的 worldcheck 是同一套思路，但有两个改进:
       1. 记的是"开始"而不是"结束"，所以崩溃点不会歧义
-      2. 结果同时写进 pwbp_capabilities.json，被 pwbp_ghost 当作门禁:
+      2. 结果同时写进 pwpr_capabilities.json，被 pwpr_ghost 当作门禁:
          没有探测通过的项，投影渲染会拒绝执行
 
   安全阀
@@ -26,18 +26,18 @@
     · 只读步骤失败不会中止；写步骤失败会中止后续依赖它的步骤
 =========================================================================== ]]
 
-local Util = require("pwbp_util")
-local Json = require("pwbp_json")
-local Log = require("pwbp_log")
-local MeshMap = require("pwbp_meshmap")
-local Hud = require("pwbp_hud")
-local Sched = require("pwbp_sched")
-local Config = require("pwbp_config")
+local Util = require("pwpr_util")
+local Json = require("pwpr_json")
+local Log = require("pwpr_log")
+local MeshMap = require("pwpr_meshmap")
+local Hud = require("pwpr_hud")
+local Sched = require("pwpr_sched")
+local Config = require("pwpr_config")
 
 local Probe = {}
 
-Probe.FILE = "pwbp_probe.txt"
-Probe.CAPS_FILE = "pwbp_capabilities.json"
+Probe.FILE = "pwpr_probe.txt"
+Probe.CAPS_FILE = "pwpr_capabilities.json"
 
 Probe.caps = {}            -- id -> { ok=bool, detail=string }
 Probe.last_summary = nil
@@ -607,14 +607,14 @@ local STEPS = {
 --
 -- ★ 方法论（这是本段最重要的部分）:
 --   1) **先枚举，再调用。** 用反射（ForEachFunction / ForEachProperty）
---      把游戏里真实存在的函数名和**参数签名**读出来，写进 pwbp_ui.txt。
+--      把游戏里真实存在的函数名和**参数签名**读出来，写进 pwpr_ui.txt。
 --      不猜类名、不猜参数个数 —— 本项目的教训（见 docs 5b 节）就是"猜类名"。
 --   2) 参数个数没看清之前**绝不去调那个函数**。PrintString 就是这么崩的。
 --   3) 唯一会真的调用游戏函数的步骤是最后一条 s9_send_test，
 --      它被配置开关挡住，默认不执行。
 -- ==========================================================================
 
-Probe.UI_FILE = "pwbp_ui.txt"
+Probe.UI_FILE = "pwpr_ui.txt"
 
 local function ui_write(lines, overwrite)
     local path = Util.join(Util.script_dir, Probe.UI_FILE)
@@ -658,7 +658,7 @@ local PC_METHOD_CANDIDATES = {
 ---   说明查询方式不管用"。**这个推理是错的** ——
 ---   设置页控件只在打开设置菜单时才存在，平时本来就查不到。
 ---   对照组必须是"**此刻一定在**"的东西。
----   `GetControlRotation` 是 `pwbp_session.lua` 里一直在用的（读视角朝向），
+---   `GetControlRotation` 是 `pwpr_session.lua` 里一直在用的（读视角朝向），
 ---   所以它一定可调用 —— 用它来验证"方法名查询"这条路本身是通的。
 local PC_METHOD_CONTROLS = {
     "GetControlRotation", "GetPawn", "GetWorld",
@@ -718,7 +718,7 @@ local UI_STEPS = {
                 "全局 FText 构造函数存在: " .. tostring(FText ~= nil)
                     .. "   （证据: Mods\\FirstPerson 里 SetText(FText(\"第一人称\"))）",
             }
-            local ft_a, e1 = Hud.ftext("PWBP-TEST")
+            local ft_a, e1 = Hud.ftext("PWPR-TEST")
             lines[#lines + 1] = "ASCII 构造: " .. ((ft_a ~= nil) and "OK" or ("失败 " .. tostring(e1)))
             if ft_a ~= nil then
                 lines[#lines + 1] = "  回读: " ..
@@ -934,7 +934,7 @@ local UI_STEPS = {
         fn = function(ctx)
             -- ★ 这一段【边查边写盘】。理由: 它是全流程风险最高的一步，
             --   如果崩在第一个候选上，写在最后的报告就一条都留不下。
-            --   所以每查一个类、每读一层，都立刻 append 到 pwbp_ui.txt。
+            --   所以每查一个类、每读一层，都立刻 append 到 pwpr_ui.txt。
             local function emit(line) ui_write({ line }) end
 
             emit("")
@@ -1055,7 +1055,7 @@ local UI_STEPS = {
                 end
             end
             emit("  ★ 上面这些就是「整句话」，游戏左下角通知区显示的就是它们。")
-            emit("    下一步的「标记测试」会往其中几个写 PWBP#1/#2/#3，请告诉我看见没有、在哪。")
+            emit("    下一步的「标记测试」会往其中几个写 PWPR#1/#2/#3，请告诉我看见没有、在哪。")
 
             -- ★★ 最强的一招: "屏幕上现在显示着 X，哪个控件在显示它？"
             -- 【探索期遗留·排查工具】按内容反查控件（notify_probe_grep，默认空）—— 排查『这行字是哪个控件显示的』时才会用到。
@@ -1181,7 +1181,7 @@ local UI_STEPS = {
                         if tb == nil then
                             emit({ "  ★ 没取到那个子控件（名字可能不对）" })
                         else
-                            local ft = Hud.ftext(marker .. " —— PWBP 浮层测试")
+                            local ft = Hud.ftext(marker .. " —— PWPR 浮层测试")
                             local ok1 = false
                             if ft ~= nil then
                                 ok1 = pcall(function() tb:SetText(ft) end)
@@ -1313,7 +1313,7 @@ local UI_STEPS = {
                 "恢复方法: 把配置 notify_try_notice_text / notify_try_client_message",
                 "          / notify_allow_named_1arg 改回 false。",
             })
-            local ok, err = Hud.show("PWBP 测试文字 —— 能看见这行就说明通道可用", "PWBP test message")
+            local ok, err = Hud.show("PWPR 测试文字 —— 能看见这行就说明通道可用", "PWPR test message")
             -- ★ 把"这次发送到底发生了什么"完整落盘 ——
             --   "SetText 没报错"完全不能说明字写进去了（CDO 那次就是这样），
             --   所以必须记录: 走了哪条路 / 控件叫什么 / 在不在视口 / 可视性 / 回读到了什么。
@@ -1366,7 +1366,7 @@ local UI_STEPS = {
             else
                 local tb = borrowed[1]
                 local before = Hud.widget_text(tb)
-                local ft = Hud.ftext("PWBP 借用测试 —— 能看见这行说明借用路线可用")
+                local ft = Hud.ftext("PWPR 借用测试 —— 能看见这行说明借用路线可用")
                 local okb = false
                 if ft ~= nil then
                     okb = pcall(function() tb:SetText(ft) end)
@@ -1421,7 +1421,7 @@ local UI_STEPS = {
             else
                 for i = 1, #picks do
                     local e = picks[i]
-                    local marker = "PWBP#" .. i
+                    local marker = "PWPR#" .. i
                     local orig = e.text
                     local mft = Hud.ftext(marker)
                     local okm = false
@@ -1450,7 +1450,7 @@ local UI_STEPS = {
                     end, 12000)
                 end
                 lines[#lines + 1] = "   ★ 请在 12 秒内看一眼屏幕，然后告诉我在哪些位置看到了"
-                lines[#lines + 1] = "     PWBP#1 ~ PWBP#" .. #picks .. " 里的哪几个编号。"
+                lines[#lines + 1] = "     PWPR#1 ~ PWPR#" .. #picks .. " 里的哪几个编号。"
             end
 
             end
@@ -1462,7 +1462,7 @@ local UI_STEPS = {
             -- ★★★ 测试 B（决定性）: 把【同一段可见文字的每一份拷贝】都写上标记。
             --
             -- 玩家的反馈给出了关键线索: 「目前语言：简体中文」是他**屏幕上看得见**的字
-            -- （ESC → 选项 → 选项页签），我们写了 PWBP#1 进去、回读也确认写进去了，
+            -- （ESC → 选项 → 选项页签），我们写了 PWPR#1 进去、回读也确认写进去了，
             -- **但屏幕上的字没有变**。只剩两种解释:
             --   (a) 我们写的是"另一份拷贝" —— Palworld 常给同一个值保留多个控件
             --       （类名里的 ForDisplay 就是暗示），渲染的那份不是我们写的那份；
@@ -1623,7 +1623,7 @@ function Probe.run(script_dir, opts)
     local ran, failed, skipped = 0, 0, 0
 
     Log.line("==================================================================")
-    Log.line("PWBP 渲染能力探测")
+    Log.line("PWPR 渲染能力探测")
     Log.line("时间: " .. Util.now_iso())
     Log.line("说明: 每步【执行前】写 START，执行后写结果。")
     Log.line("      如果游戏崩了，文件里最后一条 START 就是崩溃点。")
@@ -1720,12 +1720,12 @@ end
 
 --- 只跑 S9（屏幕提示通道）。返回 ok, detail
 ---
---- ★★ 这个函数【绝不写 pwbp_capabilities.json】。
+--- ★★ 这个函数【绝不写 pwpr_capabilities.json】。
 ---   那个文件是"投影渲染门禁"的凭据（Ghost.check_gate 会读它）。
 ---   第一版我在 S9 里也调了 save_capabilities()，等于按一次 O 就把
 ---   渲染门禁的凭据覆盖成只剩 s9_* 几条 —— 结果 K 会突然拒绝渲染，
 ---   得再按一次 N 才能恢复。**新功能不许动已验证的那条路的凭据。**
----   S9 的结论只写 pwbp_ui.txt（谁也不会去读它做门禁）。
+---   S9 的结论只写 pwpr_ui.txt（谁也不会去读它做门禁）。
 function Probe.run_ui(script_dir)
     Log.clear()
     Probe.caps = {}
@@ -1734,7 +1734,7 @@ function Probe.run_ui(script_dir)
 
     ui_write({
         "==================================================================",
-        "PWBP S9 屏幕提示通道探测",
+        "PWPR S9 屏幕提示通道探测",
         "时间: " .. Util.now_iso(),
         "为什么: KismetSystemLibrary:PrintString 在 Shipping 构建里会崩游戏（已实测），",
         "        所以屏幕上显示文字必须另找通道。本文件是枚举结果，不是猜的。",
@@ -1743,7 +1743,7 @@ function Probe.run_ui(script_dir)
     }, true)
 
     Log.line("==================================================================")
-    Log.line("PWBP S9 屏幕提示通道探测（结果写 " .. Probe.UI_FILE .. "）")
+    Log.line("PWPR S9 屏幕提示通道探测（结果写 " .. Probe.UI_FILE .. "）")
     Log.line("时间: " .. Util.now_iso())
     Log.line("==================================================================")
 

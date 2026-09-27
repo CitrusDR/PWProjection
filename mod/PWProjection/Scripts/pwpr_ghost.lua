@@ -1,11 +1,11 @@
 --[[ ===========================================================================
-  PWBP · ghost  ——  投影渲染（阶段 S4）
+  PWPR · ghost  ——  投影渲染（阶段 S4）
 
   ★ 这是本 mod 唯一会"创建 / 修改引擎对象"的模块 ★
 
   因此它有双重门禁:
     1. config.ghost_enabled 必须为 true（默认 false）
-    2. pwbp_capabilities.json 里必须已经有【探测通过】的记录
+    2. pwpr_capabilities.json 里必须已经有【探测通过】的记录
        要求: get_world / spawn_host / add_ism_component / set_static_mesh / add_instance
     缺任何一项 -> 什么都不做，只报告缺什么。
     这样"没探测过就渲染"在结构上不可能发生。
@@ -27,11 +27,11 @@
     绝不因为渲染失败去做任何"补救性"的引擎调用。
 =========================================================================== ]]
 
-local Util = require("pwbp_util")
-local Log = require("pwbp_log")
-local BP = require("pwbp_bp")
-local MeshMap = require("pwbp_meshmap")
-local Hud = require("pwbp_hud")
+local Util = require("pwpr_util")
+local Log = require("pwpr_log")
+local BP = require("pwpr_bp")
+local MeshMap = require("pwpr_meshmap")
+local Hud = require("pwpr_hud")
 
 local Ghost = {}
 
@@ -57,7 +57,7 @@ Ghost.stats = { components = 0, failed_components = 0, instances = 0,
 --- 返回 ok, 原因, caps
 function Ghost.check_gate(caps)
     if caps == nil then
-        local Probe = require("pwbp_probe")
+        local Probe = require("pwpr_probe")
         caps = Probe.load_capabilities()
     end
     if type(caps) ~= "table" then
@@ -176,7 +176,7 @@ local BUILDING_PROCESS =
 
 --- 按资产名直接加载的候选模式。
 ---
---- ★ 这份清单来自【游戏自己导出的材质清单】（pwbp_meshes.txt 第 4 节），
+--- ★ 这份清单来自【游戏自己导出的材质清单】（pwpr_meshes.txt 第 4 节），
 ---   不是猜的。2026-09-26 深夜把它列出来之后才发现:
 ---     · MI_LooksPredicator【Building】和 Normal 是两个不同的材质
 ---       （玩家反馈 Normal 是灰白格子、没有蓝色 —— Building 很可能就是蓝的那个）
@@ -199,7 +199,7 @@ Ghost.PATH_MODES = {
 ---     · 黄色   = dismantle（建造即将完成）
 ---     · 彩色   = original（不覆盖材质）
 ---   其余候选（building2 / complete / beforefix）**仍然可用**，
----   只是不进循环 —— 在 pwbp_config.json 里把 ghost_material 直接写成那个名字
+---   只是不进循环 —— 在 pwpr_config.json 里把 ghost_material 直接写成那个名字
 ---   再按 F8 就行。详见 README 的材质对照表。
 Ghost.MATERIAL_MODES = {
     "building",    -- 蓝（默认）
@@ -598,7 +598,7 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
 
     local max_inst = 6000
     pcall(function()
-        max_inst = tonumber(require("pwbp_config").get("ghost_max_instances")) or 6000
+        max_inst = tonumber(require("pwpr_config").get("ghost_max_instances")) or 6000
     end)
     if #picked > max_inst then
         return false, string.format("要显示 %d 件，超过上限 %d", #picked, max_inst)
@@ -1133,7 +1133,7 @@ function Ghost.prepare(config)
     Ghost.material = mat
     if mat == nil then
         Log.emit("[ghost] 警告: 没找到材质 —— 投影会显示成 UE 自带的灰白网格材质")
-        print("[PWBP] WARNING: no material found -- ghost will look like"
+        print("[PWPR] WARNING: no material found -- ghost will look like"
             .. " the default grey grid material")
     else
         Log.emit("[ghost] 材质: " .. tostring(which) .. "   "

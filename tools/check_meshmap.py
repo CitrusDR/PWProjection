@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""网格映射表校验器 —— 校验 pwbp_meshmap.default.json 和 pwbp_meshmap.json。
+"""网格映射表校验器 —— 校验 pwpr_meshmap.default.json 和 pwpr_meshmap.json。
 
 为什么需要它（2026-09-26 实际踩到的三个坑）:
 
@@ -18,7 +18,7 @@
      直接填进去会读不到，而且不报错。
 
 用法:
-    python tools/check_meshmap.py mod/PWBlueprint/Scripts
+    python tools/check_meshmap.py mod/PWProjection/Scripts
 退出码 0 = 全部通过。
 """
 import collections
@@ -116,9 +116,9 @@ def check_one(path):
 
 
 def main():
-    d = sys.argv[1] if len(sys.argv) > 1 else "mod/PWBlueprint/Scripts"
+    d = sys.argv[1] if len(sys.argv) > 1 else "mod/PWProjection/Scripts"
     total_problems = 0
-    for name in ("pwbp_meshmap.default.json", "pwbp_meshmap.json"):
+    for name in ("pwpr_meshmap.default.json", "pwpr_meshmap.json"):
         p = os.path.join(d, name)
         print("=" * 74)
         print("校验: {}".format(p))

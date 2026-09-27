@@ -1,8 +1,8 @@
 --[[ ===========================================================================
-  PWBP · hud —— 屏幕文字【通道层】（把一行字送到画面上）
+  PWPR · hud —— 屏幕文字【通道层】（把一行字送到画面上）
 
   这一层只干一件事: 把一行文字送到游戏画面上。
-  它不管"什么时候提示、提示什么、要不要节流" —— 那是 pwbp_notify.lua（策略层）。
+  它不管"什么时候提示、提示什么、要不要节流" —— 那是 pwpr_notify.lua（策略层）。
 
   ============================================================================
   为什么不是 PrintString（2026-09-26 实测，永久禁用）
@@ -53,17 +53,17 @@
   兜底: 控制台通道永远可用（print 永远不会崩）。所以"没有任何通道"这个状态不存在。
 =========================================================================== ]]
 
-local Util = require("pwbp_util")
-local Config = require("pwbp_config")
-local Sched = require("pwbp_sched")
+local Util = require("pwpr_util")
+local Config = require("pwpr_config")
+local Sched = require("pwpr_sched")
 -- ★ 2026-09-27: 这个模块以前**没有** require Log ——
 --   于是我加的 `if Log ~= nil` 标记全部是空转（日志里一条 [ns] 都没有）。
 --   排查"崩在通知路径里"时发现: 标记没生效 = 白等一轮。补上。
-local Log = require("pwbp_log")
+local Log = require("pwpr_log")
 
 local Hud = {}
 
--- 由 main 从配置同步（hud_enabled）。默认 true（见 pwbp_config 的说明）。
+-- 由 main 从配置同步（hud_enabled）。默认 true（见 pwpr_config 的说明）。
 Hud.enabled = true
 Hud.duration = 4.0
 
@@ -78,7 +78,7 @@ Hud.recent = {}             -- 最近发出的文字（环形，给 F7 看）
 Hud.recent_limit = 16
 Hud.results = {}            -- 通道名 -> { ok, detail }
 Hud.ctx = nil               -- { pc = <PlayerController> }
-Hud.PREFIX = "[PWBP] "
+Hud.PREFIX = "[PWPR] "
 
 -- --------------------------------------------------------------------------
 -- FText: Lua 字符串 -> UE 文本对象
@@ -151,7 +151,7 @@ end
 ---   第二版以为「userdata 就是占位对象、不可调用」→ **也错**:
 ---       对照组 `GetControlRotation`（我们每帧都在用、百分百可用）
 ---       同样报 `type=userdata`！
----   实测结论（pwbp_ui.txt 第二次）:
+---   实测结论（pwpr_ui.txt 第二次）:
 ---       GetControlRotation  type=userdata   ← 可用，但 type 是 userdata
 ---       GetWorld            type=function   ← 可用，type 是 function
 ---   ⇒ **`type()` 分辨不出"可用"和"占位"**。
@@ -160,7 +160,7 @@ end
 ---     信号 1: type(v)            （function 最明确）
 ---     信号 2: getmetatable(v).__call 是否存在（userdata 靠 __call 才能被调用）
 ---     信号 3: Util.usable(v)     （GetFullName 能不能调通）
----   本函数返回这些信号；判读逻辑在 pwbp_probe.lua 的 s9_candidates 里，
+---   本函数返回这些信号；判读逻辑在 pwpr_probe.lua 的 s9_candidates 里，
 ---   用「已知可用的方法」当基准来定标。
 ---
 --- 返回 信号表 { type=, has_call=bool, usable=bool, name=string } 或 nil
@@ -203,7 +203,7 @@ end
 
 --- ★★ 这个对象是"运行时的活实例"，还是"资产/类默认对象（CDO）"？
 ---
---- 判据来自 2026-09-27 的探测报告（pwbp_ui.txt），是实测对比出来的：
+--- 判据来自 2026-09-27 的探测报告（pwpr_ui.txt），是实测对比出来的：
 ---
 ---   CDO（设计期控件，不在画面上）:
 ---     /Game/Pal/Blueprint/UI/.../WBP_Notice.WBP_Notice_C:WidgetTree.BP_PalTextBlock_C_84
@@ -639,7 +639,7 @@ end
 --- 这个控件"真的会被画出来"吗？—— 沿父链一路检查。
 ---
 --- ★★ 为什么必须查父链（2026-09-27 标记测试的教训）:
----   那一轮往 3 个"长文本"写了 PWBP#1/2/3，全都没出现。
+---   那一轮往 3 个"长文本"写了 PWPR#1/2/3，全都没出现。
 ---   它们的**自身**可视性都是 3/4（"在渲染"），但父控件很可能是 Collapsed ——
 ---   父控件 Collapsed 时整棵子树都不画，子控件的 visible 毫无意义。
 ---   那 3 个恰好都是"按需出现"的 UI（物品说明 / 内存告警 / 钓鱼提示）。
@@ -1306,7 +1306,7 @@ Hud.CHANNELS = {
             if pc == nil then return false, "拿不到 PlayerController" end
             local name = Config.get("notify_func")
             if type(name) ~= "string" or name == "" then
-                return false, "配置 notify_func 还没填（先按 O 探测，看 pwbp_ui.txt 里的候选结果）"
+                return false, "配置 notify_func 还没填（先按 O 探测，看 pwpr_ui.txt 里的候选结果）"
             end
             local fn, tv = find_callable(pc, name)
             if fn == nil then

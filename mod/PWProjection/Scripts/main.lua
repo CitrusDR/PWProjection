@@ -1,8 +1,8 @@
 --[[ ===========================================================================
-  PWBP · main  ——  Palworld 蓝图投影 mod（入口）
+  PWPR · main  ——  Palworld 蓝图投影 mod（入口）
 
-  名字:   PWBlueprint          （Mods\PWBlueprint\Scripts\main.lua）
-  控制台标签: [PWBP]
+  名字:   PWProjection          （Mods\PWProjection\Scripts\main.lua）
+  控制台标签: [PWPR]
 
   ============================================================================
   它做什么
@@ -24,7 +24,7 @@
     S3 探测     逐项验证"渲染需要的原语"，每步落盘，崩溃可定位。  <- 按 N
     S4 投影     唯一会创建引擎对象的功能。双重门禁，默认关闭。
 
-    没有跑过 S3 并通过，S4 在结构上不可能执行（见 pwbp_ghost.check_gate）。
+    没有跑过 S3 并通过，S4 在结构上不可能执行（见 pwpr_ghost.check_gate）。
 
   ============================================================================
   按键（无修饰键的字母，都是 PWRecon 实测空着的键）
@@ -40,9 +40,9 @@
     N    渲染能力探测（S3）—— 第一次用投影前必须先跑这个
     O    屏幕提示通道探测（S9）—— 查"能不能在游戏里显示文字"
 
-  屏幕提示: 每次操作后给一行中文提示，走 pwbp_notify（策略）+ pwbp_hud（通道）。
+  屏幕提示: 每次操作后给一行中文提示，走 pwpr_notify（策略）+ pwpr_hud（通道）。
     兜底通道是控制台 print（零风险）；游戏内通道要先跑 O 探测并用配置显式打开。
-    详见 README 第 4.6 节 与 pwbp_hud.lua 文件头。
+    详见 README 第 4.6 节 与 pwpr_hud.lua 文件头。
 
   小键盘（放置微调）
     NUM_8 / NUM_2    往前 / 往后
@@ -67,19 +67,19 @@ local ok_init, init_err = pcall(function()
 -- 依赖
 -- ---------------------------------------------------------------------------
 
-local Util     = require("pwbp_util")
-local Log      = require("pwbp_log")
-local Config   = require("pwbp_config")
-local BP       = require("pwbp_bp")
-local Capture  = require("pwbp_capture")
-local Library  = require("pwbp_library")
-local MeshMap  = require("pwbp_meshmap")
-local Session  = require("pwbp_session")
-local Ghost    = require("pwbp_ghost")
-local Probe    = require("pwbp_probe")
-local Hud      = require("pwbp_hud")
-local Notify   = require("pwbp_notify")
-local Sched    = require("pwbp_sched")
+local Util     = require("pwpr_util")
+local Log      = require("pwpr_log")
+local Config   = require("pwpr_config")
+local BP       = require("pwpr_bp")
+local Capture  = require("pwpr_capture")
+local Library  = require("pwpr_library")
+local MeshMap  = require("pwpr_meshmap")
+local Session  = require("pwpr_session")
+local Ghost    = require("pwpr_ghost")
+local Probe    = require("pwpr_probe")
+local Hud      = require("pwpr_hud")
+local Notify   = require("pwpr_notify")
+local Sched    = require("pwpr_sched")
 
 local TAG = Util.TAG
 
@@ -234,7 +234,7 @@ local function do_capture(mode)
     Log.flush()
 
     -- 进度回调：每 500 件落一次盘。
-    -- 这样万一扫描途中崩了，pwbp.log 里能看到"扫到第几件"，
+    -- 这样万一扫描途中崩了，pwpr.log 里能看到"扫到第几件"，
     -- 而不是像 18:02 那次一样什么都留不下。
     local records, info = Capture.scan(filter, function(done, total)
         if done % 500 == 0 then
@@ -296,7 +296,7 @@ local function do_capture(mode)
     local final_name = name_for(probe_bp)
     local bp, err = BP.build(records, {
         name = final_name,
-        source = "PWBlueprint (UE4SS)",
+        source = "PWProjection (UE4SS)",
         layerGapCm = Config.get("layer_gap_cm"),
         snapM = Config.get("origin_snap_m"),
     })
@@ -359,7 +359,7 @@ local function do_capture(mode)
 
     -- 采集完顺手做两件只读的事:
     --   1. 刷新静态网格注册表
-    --   2. 把"注册表 + 每个类型的自动匹配结果"导出成 pwbp_meshes.txt
+    --   2. 把"注册表 + 每个类型的自动匹配结果"导出成 pwpr_meshes.txt
     -- 后者是补齐【结构件网格映射】的关键材料:
     -- 结构件在 actor 上读不到 mesh，只能靠名字匹配，而匹配是否靠谱
     -- 要看真实资产名长什么样。这个文件就是真实资产名清单。
@@ -377,7 +377,7 @@ local function do_capture(mode)
         local lines = MeshMap.discovery_lines(types)
         -- ★ 第 3 节: 逐类型的网格读取诊断（含"朝向差"列）。
         --   2026-09-26 深夜发现: 这个报告写了但【从来没被调用过】 ——
-        --   所以 pwbp_meshes.txt 里一直缺第 3 节，想查"为什么这件读不到网格"
+        --   所以 pwpr_meshes.txt 里一直缺第 3 节，想查"为什么这件读不到网格"
         --   时没东西可看。写出来的诊断必须真的接上。
         local diag_lines = Capture.mesh_diag_lines()
         for i = 1, #diag_lines do lines[#lines + 1] = diag_lines[i] end
@@ -393,7 +393,7 @@ local function do_capture(mode)
         -- 第 6 节: 实例化组件实际在用的网格（结构件/作物靠 HISM 画）
         local ism_lines = MeshMap.ism_dump_lines(300)
         for i = 1, #ism_lines do lines[#lines + 1] = ism_lines[i] end
-        local mpath = Util.join(Util.script_dir, "pwbp_meshes.txt")
+        local mpath = Util.join(Util.script_dir, "pwpr_meshes.txt")
         Util.write_file(mpath, table.concat(lines, "\r\n") .. "\r\n", true)
         mesh_note = string.format(
             "网格: 注册表 %s 个, 类型可解析 %d/%d   -> %s",
@@ -406,7 +406,7 @@ local function do_capture(mode)
     end
 
     -- ★★★ 2026-09-28 修（玩家反馈确认）: 采集那条提示是**【导出之前】发的**
-    --   （见上面第 356 行"采集完成"），而导出（刷新网格注册表 + 写 pwbp_meshes.txt）
+    --   （见上面第 356 行"采集完成"），而导出（刷新网格注册表 + 写 pwpr_meshes.txt）
     --   会卡住游戏主线程几秒 —— 卡住期间**没有画面**，但 `hud_seconds` 的计时在走
     --   ⇒ 导出超过 hud_seconds 时，提示会"刚出现就被收走"。
     --   修法: 导出结束后把**最后一条提示重发一次**（`Notify.resend` 会绕过节流、
@@ -493,7 +493,7 @@ end
 
 local function do_probe()
     Log.clear()
-    Log.emit("开始能力探测。全过程会逐步写入 pwbp_probe.txt。")
+    Log.emit("开始能力探测。全过程会逐步写入 pwpr_probe.txt。")
     Log.emit("如果游戏崩了，请把那个文件发出来 —— 最后一条 START 就是崩溃点。")
 
     local ready, missing = Probe.run(Util.script_dir, {
@@ -509,7 +509,7 @@ local function do_probe()
             "probe OK: ghost unlocked")
     else
         Log.emit("能力探测未全部通过。缺少: " .. table.concat(missing, ", "))
-        Log.emit("请把 pwbp_probe.txt 发出来。")
+        Log.emit("请把 pwpr_probe.txt 发出来。")
         Notify.show("能力探测未通过: 缺 " .. table.concat(missing, ", "),
             "probe failed: " .. table.concat(missing, ", "), "error")
     end
@@ -719,8 +719,8 @@ local function do_ghost_toggle()
                 Log.emit(string.format("    …还有 %d 种类型也缺", #arr - 10))
             end
         end
-        Log.emit("  按 Y 或 U 重新采集一次，会同时导出 pwbp_meshes.txt")
-        Log.emit("  （里面是真实的网格资产名，可据此补 pwbp_meshmap.json）")
+        Log.emit("  按 Y 或 U 重新采集一次，会同时导出 pwpr_meshes.txt")
+        Log.emit("  （里面是真实的网格资产名，可据此补 pwpr_meshmap.json）")
     end
     Log.emit("")
     Log.emit("微调: 小键盘 8/2 前后  4/6 左右  9/3 上下  +/- 旋转  5 复位  0 换步长")
@@ -836,11 +836,11 @@ end
 
 local function do_help()
     Log.clear()
-    Log.line("=================== PWBlueprint 帮助 ===================")
+    Log.line("=================== PWProjection 帮助 ===================")
     Log.line("")
     -- ★ 按键一览改成从 Notify.KEYS 生成（单一来源）
     --   以前这些行是手写的双份文案，加了键就得记得改三处（帮助/控制台/文档）。
-    --   现在加键只改 pwbp_notify.lua 里的 KEYS 一张表。
+    --   现在加键只改 pwpr_notify.lua 里的 KEYS 一张表。
     emit_lines(Notify.key_lines())
     Log.line("")
     Log.line("投影材质（F9 进 material 模式，然后用 ← / → 切换）:")
@@ -894,13 +894,13 @@ local function do_help()
     Log.line("目录:")
     Log.line("  Scripts : " .. Util.script_dir)
     Log.line("  蓝图库  : " .. tostring(Library.dir))
-    Log.line("  日志    : " .. tostring(Log.path_of("pwbp.log")))
+    Log.line("  日志    : " .. tostring(Log.path_of("pwpr.log")))
     Log.line("  S9 报告 : " .. Util.join(Util.script_dir, Probe.UI_FILE))
     Log.line("========================================================")
     flush_log()
 
     -- 控制台再来一份纯 ASCII 的（中文在控制台会变成 ???）
-    print(TAG .. " ---- PWBP keys ----")
+    print(TAG .. " ---- PWPR keys ----")
     print(TAG .. " F7 help | F8 reload config")
     print(TAG .. " Y cap-near | U cap-all | J next bp")
     print(TAG .. " K ghost on/off | L layer | H resnap")
@@ -918,7 +918,7 @@ end
 -- 为什么需要它:
 --   配置是启动时读一次的。而"探测通过后要把 ghost_enabled 改成 true"
 --   这个动作如果必须重启游戏才生效，会白白多一轮往返。
---   所以给一个 F8：改完 pwbp_config.json 按一下，立刻重新读盘并生效。
+--   所以给一个 F8：改完 pwpr_config.json 按一下，立刻重新读盘并生效。
 --
 -- 注意: 这个键【不会】绕过任何门禁 —— 它只是重新读文件。
 --       ghost_enabled 仍然是用户手写进去的，能力探测结论仍然独立校验。
@@ -1093,7 +1093,7 @@ end
 -- ---------------------------------------------------------------------------
 
 print(TAG .. " ================================================")
-print(TAG .. " PWBlueprint loading (blueprint projection mod)")
+print(TAG .. " PWProjection loading (blueprint projection mod)")
 print(TAG .. " ================================================")
 
 local cfg_values, cfg_note = nil, "(读取失败)"
@@ -1318,7 +1318,7 @@ print(TAG .. " arrows=action F9=arrow-mode")
 print(TAG .. " ------------------------------------------------")
 
 Log.line("")
-Log.line("================ PWBP 启动 ================")
+Log.line("================ PWPR 启动 ================")
 Log.line("配置: " .. tostring(cfg_note))
 Log.line("蓝图库: " .. tostring(lib_note))
 Log.line("网格覆盖表: " .. tostring(ov_note))
@@ -1335,6 +1335,6 @@ end)   -- pcall(function() ... end)
 
 if not ok_init then
     -- 这条只能用 print（Log 可能还没初始化好）。故意用 ASCII，避免控制台乱码。
-    print("[PWBP] !! init failed (mod disabled, game NOT crashed): "
+    print("[PWPR] !! init failed (mod disabled, game NOT crashed): "
         .. tostring(init_err))
 end

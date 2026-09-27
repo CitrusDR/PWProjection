@@ -1,5 +1,5 @@
 --[[ ===========================================================================
-  PWBP · bp  ——  蓝图数据模型（纯 Lua，无引擎依赖）
+  PWPR · bp  ——  蓝图数据模型（纯 Lua，无引擎依赖）
 
   与 docs/蓝图格式.md 的 v1 规范严格一致：
     { "$format": "palworld-blueprint", "version": 1,
@@ -13,7 +13,7 @@
       可能略微超出 ±size/2，这是正常的（见规范第 4 节）
 =========================================================================== ]]
 
-local Util = require("pwbp_util")
+local Util = require("pwpr_util")
 
 local BP = {}
 
@@ -194,7 +194,7 @@ function BP.build(records, opts)
         meta = {
             name = tostring(opts.name or "blueprint"),
             createdAt = Util.now_iso(),
-            source = tostring(opts.source or "PWBlueprint (UE4SS)"),
+            source = tostring(opts.source or "PWProjection (UE4SS)"),
             gameVersion = tostring(opts.gameVersion or "Palworld 1.0.x"),
             total = #buildings,
             typeCount = n_types,

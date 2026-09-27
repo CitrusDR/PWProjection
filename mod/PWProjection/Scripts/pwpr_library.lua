@@ -1,5 +1,5 @@
 --[[ ===========================================================================
-  PWBP · library  ——  蓝图库（纯 Lua 文件操作）
+  PWPR · library  ——  蓝图库（纯 Lua 文件操作）
 
   目录:  <mod>\blueprints\            （不存在会自动 mkdir）
   索引:  <mod>\blueprints\index.txt  每行一个文件名（不含路径）
@@ -14,10 +14,10 @@
   重新导出一次，或手工把文件名写进 index.txt）。
 =========================================================================== ]]
 
-local Util = require("pwbp_util")
-local Json = require("pwbp_json")
-local BP = require("pwbp_bp")
-local Config = require("pwbp_config")
+local Util = require("pwpr_util")
+local Json = require("pwpr_json")
+local BP = require("pwpr_bp")
+local Config = require("pwpr_config")
 
 local Library = {}
 
@@ -131,7 +131,7 @@ function Library.save_index()
     local path = Library.index_path()
     if path == nil then return false, "库目录未初始化" end
     if Library.dir_ready ~= true then return false, "库目录尚未建立" end
-    local lines = { "# PWBlueprint 蓝图索引，每行一个文件（相对 blueprints\\ 目录）" }
+    local lines = { "# PWProjection 蓝图索引，每行一个文件（相对 blueprints\\ 目录）" }
     for i = 1, #Library.entries do
         local e = Library.entries[i]
         lines[#lines + 1] = e.file .. "|" .. tostring(e.name or e.file)

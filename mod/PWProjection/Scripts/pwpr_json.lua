@@ -1,5 +1,5 @@
 --[[ ===========================================================================
-  PWBP · json  ——  纯 Lua 的 JSON 编解码（不依赖任何引擎功能）
+  PWPR · json  ——  纯 Lua 的 JSON 编解码（不依赖任何引擎功能）
 
   为什么自己写:
     UE4SS 不带 json 库；蓝图文件既要能读也要能写，而且要能在离线环境里
@@ -14,7 +14,7 @@
 
 local Json = {}
 
-local ARRAY_MARK = { __pwbp_json_array = true }
+local ARRAY_MARK = { __pwpr_json_array = true }
 
 --- JSON null 的哨兵。用独立对象而不是 nil ——
 --- 因为 Lua 表里存不了 nil，数组中间出现 null 会导致索引塌陷。
@@ -30,7 +30,7 @@ end
 
 function Json.is_array_marked(t)
     local mt = getmetatable(t)
-    return mt ~= nil and mt.__pwbp_json_array == true
+    return mt ~= nil and mt.__pwpr_json_array == true
 end
 
 -- --------------------------------------------------------------------------

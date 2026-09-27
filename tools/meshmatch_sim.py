@@ -12,16 +12,16 @@ Lua 跑不了，但匹配算法是纯逻辑 —— 可以在 Python 里原样模
     · 有没有误匹配（张冠李戴）
     · 哪些类型必须靠 actor 上的 mesh 或手写覆盖表
 
-验证过之后再把规则移植到 pwbp_meshmap.lua，避免"改了 Lua 只能进游戏试"。
+验证过之后再把规则移植到 pwpr_meshmap.lua，避免"改了 Lua 只能进游戏试"。
 
 输入
 ----
-    pwbp_meshes.txt    游戏里 FindAllOf("StaticMesh") 导出的注册表
+    pwpr_meshes.txt    游戏里 FindAllOf("StaticMesh") 导出的注册表
     data/recon_alltypes.txt   79 种建筑类型的清单（含 recon 时读到的 mesh）
 
 用法
 ----
-    python tools/meshmatch_sim.py --meshes <pwbp_meshes.txt> \
+    python tools/meshmatch_sim.py --meshes <pwpr_meshes.txt> \
                                   --types data/recon_alltypes.txt
 """
 
@@ -35,7 +35,7 @@ import re
 import sys
 
 # ---------------------------------------------------------------------------
-# 归一化（与 Lua 侧 pwbp_meshmap.normalize 必须一致）
+# 归一化（与 Lua 侧 pwpr_meshmap.normalize 必须一致）
 # ---------------------------------------------------------------------------
 
 def normalize(s: str) -> str:
@@ -209,7 +209,7 @@ def load_types(path: str):
 
 
 def load_overrides(path):
-    """读 pwbp_meshmap.default.json / pwbp_meshmap.json 的有效条目。
+    """读 pwpr_meshmap.default.json / pwpr_meshmap.json 的有效条目。
 
     值可以是字符串，也可以是字符串数组（一个建筑由多个网格拼成，
     例如简约门 = 门框 + 左右门扇）。审计时统一取【列表】，
@@ -309,7 +309,7 @@ def main() -> int:
                     "Wood_Roof", "Wood_Stair", "Stone_WallGate"])
     ap.add_argument("--emit-overrides", action="store_true",
                     help="把 recon 时 actor 上【真实读到】的 mesh 输出成 "
-                         "pwbp_meshmap.json 条目（这是实测记录，不是猜测）")
+                         "pwpr_meshmap.json 条目（这是实测记录，不是猜测）")
     ap.add_argument("--orphans", action="store_true",
                     help="列出 /Architecture/ 下没有任何类型用到的网格（孤儿资产），"
                          "用来判断'看不见的类型'到底是缺映射还是根本缺资产")
@@ -325,14 +325,14 @@ def main() -> int:
     ap.add_argument("--mapdir", default=None,
                     help="覆盖表所在目录（默认取 --meshes 所在目录）。"
                          "审计时通常要指向工作区里的 "
-                         "mod/PWBlueprint/Scripts，而不是游戏里那份旧拷贝。")
+                         "mod/PWProjection/Scripts，而不是游戏里那份旧拷贝。")
     args = ap.parse_args()
 
     meshes_path = args.meshes
     if meshes_path is None:
         meshes_path = os.path.join(
             r"D:\Steam\steamapps\common\Palworld\Mods\NativeMods\UE4SS\Mods",
-            "PWBlueprint", "Scripts", "pwbp_meshes.txt")
+            "PWProjection", "Scripts", "pwpr_meshes.txt")
 
     meshes = load_meshes(meshes_path)
     print("候选网格（已排除关卡几何体）: {} 个".format(len(meshes)))
@@ -369,9 +369,9 @@ def main() -> int:
     if args.orphans or args.orphans_all:
         sdir = args.mapdir or os.path.dirname(meshes_path)
         overrides = load_overrides(
-            os.path.join(sdir, "pwbp_meshmap.default.json"))
+            os.path.join(sdir, "pwpr_meshmap.default.json"))
         overrides.update(load_overrides(
-            os.path.join(sdir, "pwbp_meshmap.json")))
+            os.path.join(sdir, "pwpr_meshmap.json")))
         used = set()
         for v in overrides.values():
             if v and v != "-":
@@ -421,9 +421,9 @@ def main() -> int:
         sdir = args.mapdir or os.path.dirname(meshes_path)
         print("覆盖表目录: {}".format(sdir))
         overrides = load_overrides(
-            os.path.join(sdir, "pwbp_meshmap.default.json"))
+            os.path.join(sdir, "pwpr_meshmap.default.json"))
         overrides.update(load_overrides(
-            os.path.join(sdir, "pwbp_meshmap.json")))
+            os.path.join(sdir, "pwpr_meshmap.json")))
         print("覆盖表条目: {} 条".format(len(overrides)))
         print()
         print("{:<36} {:<32} {:<18} {}".format(
@@ -470,8 +470,8 @@ def main() -> int:
     if args.emit_overrides:
         by_short = by_short_all(meshes)
         sdir = args.mapdir or os.path.dirname(meshes_path)
-        cur = load_overrides(os.path.join(sdir, "pwbp_meshmap.default.json"))
-        cur.update(load_overrides(os.path.join(sdir, "pwbp_meshmap.json")))
+        cur = load_overrides(os.path.join(sdir, "pwpr_meshmap.default.json"))
+        cur.update(load_overrides(os.path.join(sdir, "pwpr_meshmap.json")))
 
         new_entries, conflicts, same = [], [], 0
         for t in sorted(known):

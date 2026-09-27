@@ -12,10 +12,10 @@ __pycache__/
 # ---- 运行期产物 ----
 #（正常情况下这些文件都在游戏目录里，这里是兜底，避免误提交）
 *.log
-pwbp_ui.txt
-pwbp_capabilities.json
-pwbp_config.json
-pwbp_meshes.txt
+pwpr_ui.txt
+pwpr_capabilities.json
+pwpr_config.json
+pwpr_meshes.txt
 
 # ---- 🔴 凭据 / 密钥（永远不要提交）----
 # 这一节是"防手滑"：即使不小心把密钥文件放进工作区，也不会被 add 进去。

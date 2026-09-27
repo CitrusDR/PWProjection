@@ -1,7 +1,7 @@
 {
-  "_what": "PWBP 网格覆盖表 —— 建筑类型 -> 静态网格资产路径。优先级：高于自动名字匹配，低于 actor 上直接读到的网格。",
+  "_what": "PWPR 网格覆盖表 —— 建筑类型 -> 静态网格资产路径。优先级：高于自动名字匹配，低于 actor 上直接读到的网格。",
   "_why": "Palworld 的建筑【类型名】和【资产名】用词不一致（地基叫 Floor 不叫 Foundation；床只有 SM_PalBed* 四种，而类型有 _02/_03/_04/_06）。自动匹配不可能 100% 覆盖，所以把已经核实过的映射固定下来。",
-  "_format": "左边 = 蓝图里的短类型名（见 pwbp.log 的类型列表 / blueprints 目录里的 json）；右边 = 完整资产路径（见 Scripts\\pwbp_meshes.txt）。",
+  "_format": "左边 = 蓝图里的短类型名（见 pwpr.log 的类型列表 / blueprints 目录里的 json）；右边 = 完整资产路径（见 Scripts\\pwpr_meshes.txt）。",
 
   "_group_1": "【第一组】结构件 —— 地基/墙/屋顶/楼梯/门窗。占一个基地建筑总数 90% 以上，所以宁可显式写死。核对依据: 游戏导出的真实资产清单（150 个 /Architecture/ 资产里结构件只有 8 个）+ tools/meshmatch_sim.py 离线验证。",
   "Wood_Foundation":  "/Game/Pal/Model/Prop/Architecture/Architecture_Wood/SM_Floor_Wood.SM_Floor_Wood",
@@ -75,7 +75,7 @@
   "BaseCampWorkHard_03":                "/Game/Pal/Model/Prop/Architecture/SurveillanceTableAncient/SM_SurveillanceTableAncient.SM_SurveillanceTableAncient",
   "DefenseWait":                        "/Game/Pal/Model/Prop/Architecture/DefenseFacilityMedieval/DefenseFacilityMedieval_Sand.DefenseFacilityMedieval_Sand",
 
-  "_group_7": "【第七组】主基地采集后由实测补齐/纠正（2026-09-26 更深）。生成方式: python tools/meshmatch_sim.py --emit-overrides --blueprints <游戏里的 blueprints 目录> --mapdir mod\\PWBlueprint\\Scripts —— 它会直接把'实测 vs 覆盖表'的差异列出来。",
+  "_group_7": "【第七组】主基地采集后由实测补齐/纠正（2026-09-26 更深）。生成方式: python tools/meshmatch_sim.py --emit-overrides --blueprints <游戏里的 blueprints 目录> --mapdir mod\\PWProjection\\Scripts —— 它会直接把'实测 vs 覆盖表'的差异列出来。",
   "_g7_new": "★ 新增：这 6 条以前完全没有映射（会画不出来），现在由游戏自报的网格补上",
   "BaseCampItemDispenser":              "/Game/Pal/Model/Prop/Architecture/ItemTransporter/SM_ItemTransporter.SM_ItemTransporter",
   "CharacterRankUp":                    "/Game/Pal/Model/Prop/Architecture/PalSynthesizer/SM_PalSynthesizer.SM_PalSynthesizer",
@@ -89,7 +89,7 @@
   "_g7_lesson": "教训：宁可留空让人看得见'这件没画出来'，也不要猜一个看起来像的 —— 猜错的那两个如果不采集，我永远不会知道自己是错的。",
 
   "_group_8": "【第八组】第 5 节反向取证（从网格组件反查宿主建筑类型）查到的。这一组是【游戏自己在组件上用的网格】，不是猜的。",
-  "_g8_note": "取证方法: pwbp_meshes.txt 第 5 节。原理是组件全名里带着宿主建筑类型名（BP_BuildObject_<类型>_C）。",
+  "_g8_note": "取证方法: pwpr_meshes.txt 第 5 节。原理是组件全名里带着宿主建筑类型名（BP_BuildObject_<类型>_C）。",
   "TableDresser01_Stone":               "/Game/Pal/Model/Prop/Furniture/Bedroom_Furniture/SM_mirrortable.SM_mirrortable",
 
   "_g8_uncertain_not_applied": "★ 下面这几个第 5 节【查到了】，但我判断网格不对，所以【故意不写进表】—— 写了会画出一个错的东西。",
@@ -101,7 +101,7 @@
   "_group_9": "【第九组】★ 骨骼网格（SkeletalMesh）—— 这一组是 2026-09-26 更深夜最大的发现。",
   "_g9_why": "这些建筑的资产是 SK_ 开头的【SkeletalMesh】，而我们的网格注册表原来只枚举 FindAllOf(\"StaticMesh\")，所以它们从来没进过注册表 —— 按名字永远匹配不到，obj.Mesh 也是 nil，看起来像'这些建筑没有网格资产'。玩家做了一个对照实验: 手动摆了一个低级工厂(Factory_Hard_02)，它用的是【静态】网格 SM_WorkBenchModern；而后期工厂用的是【骨骼】网格。差异就在这里。",
   "_g9_fix": "已修: ① 注册表现在同时枚举 StaticMesh 和 SkeletalMesh；② Ghost 现在会用 SkeletalMeshComponent + SetSkeletalMesh 渲染它们（骨骼网格不能实例化，所以每件一个组件）。",
-  "_g9_source": "下面每一条都来自【游戏自己在组件上用的网格】（pwbp_meshes.txt 第 5 节反向取证），不是猜的。",
+  "_g9_source": "下面每一条都来自【游戏自己在组件上用的网格】（pwpr_meshes.txt 第 5 节反向取证），不是猜的。",
 
   "AncientEnergyGenerator":             "/Game/Pal/Model/Prop/Architecture/GeneratorAncient/SK_GeneratorAncient.SK_GeneratorAncient",
   "AncientMultiProduct":                "/Game/Pal/Model/Prop/Architecture/AncientFabricator/SK_AncientFabricator.SK_AncientFabricator",
@@ -118,7 +118,7 @@
 
   "_group_10": "【第十组】结构件补齐（2026-09-26 更深夜，玩家临时加盖三层楼验证分层时发现）。",
   "_g10_why": "结构件的类型名和资产名对不上，名字匹配必然拒绝。最典型的是游戏自己的拼写错误: 类型叫 Ancient_TriangleWall，资产却叫 SM_Wall【Tryangle】_Ancient —— 拼错了一个字母，靠字符串永远匹配不到。",
-  "_g10_source": "来源: pwbp_meshes.txt 第 5 节反向取证（结构件居然也能查到，因为组件全名里带着宿主类型名）。",
+  "_g10_source": "来源: pwpr_meshes.txt 第 5 节反向取证（结构件居然也能查到，因为组件全名里带着宿主类型名）。",
 
   "Ancient_TriangleWall":               "/Game/Pal/Model/Prop/Architecture/Architecture_Ancient/SM_WallTryangle_Ancient.SM_WallTryangle_Ancient",
   "Ancient_SlantedRoof":                "/Game/Pal/Model/Prop/Architecture/Architecture_Ancient/SM_RoofB_Ancient.SM_RoofB_Ancient",
@@ -135,7 +135,7 @@
   ],
 
   "_group_11": "【第十一组】玩家陆续反馈的缺失建筑 + 一处重复映射的修正（2026-09-26 更深夜）。",
-  "_g11_missing": "这一组的三条此前【完全没有映射】，所以在那几个位置什么都不画。来源都是 pwbp_meshes.txt 第 5 节反向取证（游戏自己在组件上用的网格）。",
+  "_g11_missing": "这一组的三条此前【完全没有映射】，所以在那几个位置什么都不画。来源都是 pwpr_meshes.txt 第 5 节反向取证（游戏自己在组件上用的网格）。",
   "PalMedicineBox":                     "/Game/Pal/Model/Prop/Architecture/MedicineBox/SM_MedicineBox.SM_MedicineBox",
   "BaseCampWorkerExtraStation":         "/Game/Pal/Model/Prop/Architecture/RemotePalBox/SM_RemotePalBox.SM_RemotePalBox",
 
@@ -158,7 +158,7 @@
   "_g12_lesson": "★★ 教训: 我拿「它是 /Other/ 下的孤儿资产」当证据推断了它能用 —— 这个推断是错的。/Other/ 里既有可建造道具（PalBox、Terminal），也有纯世界道具（PalCage、GangCamp、EnemyPoint、Relic、SalvageSpot…）。【孤儿资产 ≠ 可建造资产】，命名像也不等于就是它。",
   "_g12_todo": "★ 真正的解法（已记为待办 3）: 让蓝图记录【每个组件的相对变换（位置/旋转/缩放）】，投影时逐件还原。那样 8 根柱子和 8 个方块会各就各位，笼子就出来了。",
 
-  "_group_6": "【第六组】还没确认的 —— 自动匹配会给结果，但我没法确认对不对，所以故意不写死。要改就在用户表 pwbp_meshmap.json 里写。",
+  "_group_6": "【第六组】还没确认的 —— 自动匹配会给结果，但我没法确认对不对，所以故意不写死。要改就在用户表 pwpr_meshmap.json 里写。",
   "_uncertain": {
     "PalFoodBox": "自动匹配给 SM_PalCoolingFeedBox_Food（疑似是【食物】子网格而不是箱体）",
     "PalFoodBoxCool": "同上",
@@ -169,8 +169,8 @@
     "以下类型注册表里找不到可辩护的候选": "OilPump02, AncientEnergyGenerator, BaseCampWorkerExtraStation, BaseCampItemDispenser, AncientMultiProduct, DefenseWait, WeaponFactory_Dirty_4, TableDresser01_Stone, DisplayCharacter, Factory_Hard_4, AncientRelicRecycler, BaseCampWorkHard_03(名字像 SurveillanceTableAncient), IceCrusher, FlourMill, CharacterSkinChange, CharacterRankUp, SphereFactory_Black_04"
   },
 
-  "_group_13": "【第十三组】2026-09-28 从【旧存档】的 pwbp_meshes.txt 反查得到（那一节是脚本自动从游戏组件算出来的，不是推测）。它们的 actor 网格【读不出名字】（占位对象），所以以前只能靠名字匹配 —— 结果伐木场直接不画、采石场被猜成别的形状。",
-  "_group_13_note": "伐木场/采石场在游戏里是【多件拼装】(Tree+Fence+Acce / RockA+B+C+Fence)：这里只给了【主件】的单网格近似 —— 完整拼装要等待办 3（组件的相对变换）。看着不对就改 pwbp_meshmap.json。",
+  "_group_13": "【第十三组】2026-09-28 从【旧存档】的 pwpr_meshes.txt 反查得到（那一节是脚本自动从游戏组件算出来的，不是推测）。它们的 actor 网格【读不出名字】（占位对象），所以以前只能靠名字匹配 —— 结果伐木场直接不画、采石场被猜成别的形状。",
+  "_group_13_note": "伐木场/采石场在游戏里是【多件拼装】(Tree+Fence+Acce / RockA+B+C+Fence)：这里只给了【主件】的单网格近似 —— 完整拼装要等待办 3（组件的相对变换）。看着不对就改 pwpr_meshmap.json。",
   "StationDeforest2": "/Game/Pal/Model/Prop/Architecture/Loggingcamp/SM_Loggingcamp_Tree.SM_Loggingcamp_Tree",
   "StonePit":         "/Game/Pal/Model/Prop/Architecture/StonePit/SM_StonePit_SM_StonePit_RockA.SM_StonePit_SM_StonePit_RockA",
   "CopperPit_2":      "/Game/Pal/Model/Prop/Architecture/StonePitLarge/SM_StonePitLarge.SM_StonePitLarge",
@@ -178,7 +178,7 @@
   "SulfurPit":        "/Game/Pal/Model/Prop/Resource/Rock/SM_RockSulfur.SM_RockSulfur",
   "Crusher":          "/Game/Pal/Model/Prop/Architecture/Pulverizer/SK_Pulverizer.SK_Pulverizer",
 
-  "_how_to_add": "想自己加/改映射，不要改这个文件（部署时会覆盖）—— 改 pwbp_meshmap.json。以下划线开头的键会被忽略，可以当注释用。",
-  "_user_file": "pwbp_meshmap.json",
+  "_how_to_add": "想自己加/改映射，不要改这个文件（部署时会覆盖）—— 改 pwpr_meshmap.json。以下划线开头的键会被忽略，可以当注释用。",
+  "_user_file": "pwpr_meshmap.json",
   "__end__": ""
 }

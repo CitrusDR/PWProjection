@@ -4,7 +4,7 @@
 目的（玩家 2026-09-28 要求）:
     配置开关必须有落脚点，避免以后"重复造相同或类似的功能"。
     所以这里强制检查两件事:
-      ① **每一个写在 pwbp_config.lua 的 DEFAULTS 里的键，
+      ① **每一个写在 pwpr_config.lua 的 DEFAULTS 里的键，
          都必须在 docs/配置说明.md 里出现过**（漏了就报错，防止文档悄悄过期）；
       ② **每一个"配置文件"（代码里真正会读写的那些 .json）
          都必须在文档里被点名**（玩家反馈: 翻到好几个命名很像的配置文件，
@@ -21,17 +21,17 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-SCRIPTS = os.path.join(ROOT, "mod", "PWBlueprint", "Scripts")
-CONFIG = os.path.join(SCRIPTS, "pwbp_config.lua")
+SCRIPTS = os.path.join(ROOT, "mod", "PWProjection", "Scripts")
+CONFIG = os.path.join(SCRIPTS, "pwpr_config.lua")
 DOC = os.path.join(ROOT, "docs", "配置说明.md")
 
 # 这些 .json 是"配置文件"（代码会读写），必须在文档里点名。
-# 报告类（pwbp.log / pwbp_meshes.txt / pwbp_ui.txt / pwbp_probe.txt）不算配置。
+# 报告类（pwpr.log / pwpr_meshes.txt / pwpr_ui.txt / pwpr_probe.txt）不算配置。
 CONFIG_FILES = [
-    "pwbp_config.json",
-    "pwbp_meshmap.default.json",
-    "pwbp_meshmap.json",
-    "pwbp_capabilities.json",
+    "pwpr_config.json",
+    "pwpr_meshmap.default.json",
+    "pwpr_meshmap.json",
+    "pwpr_capabilities.json",
 ]
 
 

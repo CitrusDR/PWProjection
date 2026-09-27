@@ -1,5 +1,5 @@
 --[[ ===========================================================================
-  PWBP · capture  ——  从游戏里读建筑（只读，绝不改状态）
+  PWPR · capture  ——  从游戏里读建筑（只读，绝不改状态）
 
   只用【已被 PWRecon 长期验证过】的调用:
       FindAllOf("PalBuildObject")          列建筑
@@ -9,11 +9,11 @@
       obj.Mesh.StaticMesh:GetFullName()    网格（只有功能性设施才有）
   每一次引擎调用都单独 pcall —— 任何一项失败只影响那一条记录。
 
-  输出 records 的坐标是【世界厘米】，交给 pwbp_bp 去算原点/分层。
+  输出 records 的坐标是【世界厘米】，交给 pwpr_bp 去算原点/分层。
 =========================================================================== ]]
 
-local Util = require("pwbp_util")
-local BP = require("pwbp_bp")
+local Util = require("pwpr_util")
+local BP = require("pwpr_bp")
 
 local Capture = {}
 
@@ -275,7 +275,7 @@ function Capture.read_one(obj, diag)
         mesh = Capture.mesh_short_name(comp, diag),
         -- ★★★ 2026-09-28: 同时把**完整资产路径**带出去（写进蓝图）。
         --   投影端靠它 `LoadAsset(路径)`，不再依赖"当前世界里加载了什么资产" ——
-        --   这是"换存档投影缺件"的根治办法。见 pwbp_bp.lua 里的长注释。
+        --   这是"换存档投影缺件"的根治办法。见 pwpr_bp.lua 里的长注释。
         mesh_path = (diag ~= nil) and diag.mesh_full or nil,
     }
 end
@@ -578,7 +578,7 @@ function Capture.mesh_diag_lines()
     return out
 end
 
---- 组装成蓝图（坐标换算 + 分层 + 统计都在 pwbp_bp 里做）
+--- 组装成蓝图（坐标换算 + 分层 + 统计都在 pwpr_bp 里做）
 function Capture.to_blueprint(records, opts)
     return BP.build(records, opts)
 end

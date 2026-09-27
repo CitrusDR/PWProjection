@@ -1,5 +1,5 @@
 --[[ ===========================================================================
-  PWBP · util  ——  纯工具层（不主动调用任何"有副作用"的引擎函数）
+  PWPR · util  ——  纯工具层（不主动调用任何"有副作用"的引擎函数）
 
   设计约束（来自 3 次真实崩溃的教训，见 docs/踩坑记录.md）:
     1. 读属性一律走 pcall —— 读不存在的属性在 UE4SS 上返回"占位对象"而非 nil，
@@ -11,7 +11,7 @@
 
 local Util = {}
 
-Util.TAG = "[PWBP]"
+Util.TAG = "[PWPR]"
 
 -- --------------------------------------------------------------------------
 -- 路径
@@ -181,7 +181,7 @@ function Util.find_pc_strict()
     --   所以"取第一个"会每次拿到不同的那个。
     --   ⇒ 判据换成**"这个 PC 有没有 Pawn"**（只有玩家自己的那个才有），
     --     并按全名排序做确定性兜底。这个函数只用于"拿一个能用的 PC / 它所在的世界"，
-    --     **不要**用它派生"世代标记"（那已经被证明不可靠，见 pwbp_ghost.stale_world）。
+    --     **不要**用它派生"世代标记"（那已经被证明不可靠，见 pwpr_ghost.stale_world）。
     local best, best_name = nil, nil
     local ok, list = pcall(function() return FindAllOf("PlayerController") end)
     if ok and type(list) == "table" then
@@ -454,7 +454,7 @@ function Util.mkdir(path)
         return false, "unsafe path"
     end
     pcall(function() os.execute('mkdir "' .. path .. '" >nul 2>nul') end)
-    local probe = Util.join(path, ".__pwbp_write_probe")
+    local probe = Util.join(path, ".__pwpr_write_probe")
     local ok, err = Util.write_file(probe, "probe", false)
     if not ok then return false, tostring(err) end
     Util.remove_file(probe)
@@ -464,7 +464,7 @@ end
 --- 目录是否可写（写探针，用完删掉）
 function Util.dir_writable(path)
     if path == nil or path == "" then return false end
-    local probe = Util.join(path, ".__pwbp_write_probe")
+    local probe = Util.join(path, ".__pwpr_write_probe")
     local ok = Util.write_file(probe, "probe", false)
     if not ok then return false end
     Util.remove_file(probe)

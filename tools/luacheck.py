@@ -14,7 +14,7 @@ luacheck.py -- Lua 静态检查（AI 无法执行 Lua，这是替代方案）
 当时的检查只做了"括号配平"和"手写的关键函数存在性列表"，
 **都发现不了这个问题**。
 
-后来（PWBlueprint 阶段）又差点踩两个新坑：
+后来（PWProjection 阶段）又差点踩两个新坑：
 
     1) 在双引号字符串里嵌了双引号:
            return true, "可用（游戏自带的"可放置"材质）"
@@ -446,7 +446,7 @@ def check_use_before_local(src: str) -> list:
     运行时才炸 "attempt to index a nil value (global 'X')"。
 
     ★ 2026-09-26 22:14 真实踩过这个坑：
-      pwbp_meshmap.lua 里 `type_keywords` 用了写在它【后面】的
+      pwpr_meshmap.lua 里 `type_keywords` 用了写在它【后面】的
       `local SYNONYMS`。词法、块平衡、未定义调用、跨模块接口
       —— 全部检查都通过了，一进游戏按 K 就报错。
 
@@ -771,7 +771,7 @@ def check_keyword_as_field(src: str) -> list:
     **语法错误** —— 不是"运行到那行才错"，而是**整个文件都加载不了**。
 
     ★ 这个 bug 真实发生过（2026-09-27）:
-      pwbp_notify.lua 里写了 `function Notify.resend()` 之前的一版叫
+      pwpr_notify.lua 里写了 `function Notify.resend()` 之前的一版叫
       `Notify.repeat`。因为 repeat 是块起始关键字，
       静态检查器先报的是"块结构平衡: 结束时深度 = 1"（看着像少写 end），
       追下去才发现是【保留字当函数名】。
@@ -833,7 +833,7 @@ def check_cross_module(dirpath: str, files) -> list:
       1. require 的路径是【字符串】，而 strip_comments_and_strings 会把
          字符串内容清空 —— 所以 require 必须从【原文】里找，
          不能从清洗后的文本里找（否则整个检查静默失效）。
-      2. 模块里的函数挂在【局部表名】上（pwbp_util.lua 里是 `Util.xxx`），
+      2. 模块里的函数挂在【局部表名】上（pwpr_util.lua 里是 `Util.xxx`），
          不是文件名。所以要先统计出该文件最常用的 `function X.` 前缀。
 
     只检查【形如 Alias.member( 的调用】，不碰字段访问
@@ -886,7 +886,7 @@ def check_cross_module(dirpath: str, files) -> list:
                     problems.append(
                         (os.path.basename(f), line, alias, member, mod))
 
-        # 内联写法：require("pwbp_x").get(...)
+        # 内联写法：require("pwpr_x").get(...)
         for m in re.finditer(
                 r'require\(\s*"([\w./]+)"\s*\)\.(\w+)\s*\(', src):
             target, member = m.group(1).split("/")[-1], m.group(2)

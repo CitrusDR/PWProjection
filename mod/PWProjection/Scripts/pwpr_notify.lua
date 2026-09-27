@@ -1,9 +1,9 @@
 --[[ ===========================================================================
-  PWBP · notify —— 屏幕提示【策略层】
+  PWPR · notify —— 屏幕提示【策略层】
 
   分工:
-    pwbp_hud.lua    通道层 —— "怎么把一行字送到画面上"（引擎调用都在那边）
-    pwbp_notify.lua 策略层 —— "什么时候提示、提示什么、要不要节流"（本文件，纯 Lua）
+    pwpr_hud.lua    通道层 —— "怎么把一行字送到画面上"（引擎调用都在那边）
+    pwpr_notify.lua 策略层 —— "什么时候提示、提示什么、要不要节流"（本文件，纯 Lua）
 
   ============================================================================
   为什么要这一层
@@ -26,13 +26,13 @@
   不节流的话屏幕上会刷屏。所以同一时间窗内只发第一条
   （窗口长度 = 配置 notify_min_interval，默认 0.25 秒）。
 
-  开关: 统一用 pwbp_config.json 的 hud_enabled（默认 true）。
+  开关: 统一用 pwpr_config.json 的 hud_enabled（默认 true）。
   ★ 控制台通道零风险，所以默认开；高风险的游戏内通道各有自己的 gate，默认关。
 =========================================================================== ]]
 
-local Log = require("pwbp_log")
-local Hud = require("pwbp_hud")
-local Config = require("pwbp_config")
+local Log = require("pwpr_log")
+local Hud = require("pwpr_hud")
+local Config = require("pwpr_config")
 
 local Notify = {}
 
@@ -50,7 +50,7 @@ Notify.last_t = nil
 ---   所以 "Alt+↑" 会同时触发 "Alt+↑" 和 "↑" 两个回调（玩家实测报过这个 bug）。
 Notify.KEYS = {
     { group = "main",   key = "F7",  cn = "帮助 / 当前状态",        en = "help / status" },
-    { group = "main",   key = "F8",  cn = "重载 pwbp_config.json",  en = "reload config" },
+    { group = "main",   key = "F8",  cn = "重载 pwpr_config.json",  en = "reload config" },
     { group = "main",   key = "Y",   cn = "采集: 玩家附近",          en = "capture: near" },
     { group = "main",   key = "U",   cn = "采集: 全部建筑",          en = "capture: all" },
     { group = "main",   key = "J",   cn = "蓝图库: 下一张并加载",    en = "library: next" },

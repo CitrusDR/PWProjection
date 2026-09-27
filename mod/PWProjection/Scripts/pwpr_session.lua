@@ -1,5 +1,5 @@
 --[[ ===========================================================================
-  PWBP · session  ——  放置会话（纯状态机，不直接调引擎）
+  PWPR · session  ——  放置会话（纯状态机，不直接调引擎）
 
   职责:
     · 记住"当前加载的是哪张蓝图"
@@ -14,8 +14,8 @@
         place.z = 玩家Z + size.z*100/2
 =========================================================================== ]]
 
-local Util = require("pwbp_util")
-local BP = require("pwbp_bp")
+local Util = require("pwpr_util")
+local BP = require("pwpr_bp")
 
 local Session = {}
 
@@ -96,7 +96,7 @@ end
 function Session.feet_offset_cm()
     local manual = nil
     pcall(function()
-        manual = tonumber(require("pwbp_config").get("player_feet_offset_cm"))
+        manual = tonumber(require("pwpr_config").get("player_feet_offset_cm"))
     end)
     if manual ~= nil and manual ~= 0 then
         return manual, "配置指定"

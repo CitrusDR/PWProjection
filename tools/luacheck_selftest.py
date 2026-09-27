@@ -123,7 +123,7 @@ return owner_type
 ''',
 
     # Lua 保留字当字段名/方法名 —— 2026-09-27 真实踩的坑：
-    # pwbp_notify.lua 里写了 function Notify.repeat()。
+    # pwpr_notify.lua 里写了 function Notify.repeat()。
     # repeat 是块起始关键字，所以这是【语法错误】: 整个文件都加载不了，
     # 症状是 mod 一行日志都不打、直接 init failed。
     # 当时静态检查器先报的是"块结构平衡: 结束时深度 = 1"（看着像少写 end）。

@@ -1,10 +1,10 @@
 ﻿#Requires -Version 5.1
 <#
-  deploy.ps1 -- 部署 PWBlueprint 到 Palworld 的 UE4SS
+  deploy.ps1 -- 部署 PWProjection 到 Palworld 的 UE4SS
 
   做 4 件事:
-    1. 复制 mod\PWBlueprint\Scripts\*.lua  ->  <游戏>\Mods\NativeMods\UE4SS\Mods\PWBlueprint\Scripts\
-    2. 在 mods.txt 里启用 PWBlueprint（幂等）
+    1. 复制 mod\PWProjection\Scripts\*.lua  ->  <游戏>\Mods\NativeMods\UE4SS\Mods\PWProjection\Scripts\
+    2. 在 mods.txt 里启用 PWProjection（幂等）
     3. 顺手清理废弃的 PWRecon / PWKeyTest（目录 + mods.txt 条目）
     4. 打开 EnableHotReloadSystem
 
@@ -37,7 +37,7 @@ function Bad($m)   { Write-Host "  [错误] $m" -ForegroundColor Red }
 function Info($m)  { Write-Host "  $m" }
 function Head($m)  { Write-Host ""; Write-Host $m -ForegroundColor White }
 
-$ModName    = "PWBlueprint"
+$ModName    = "PWProjection"
 $ObsoleteMods = @("PWRecon", "PWKeyTest")
 
 # ------------------------------------------------------------------ 定位
@@ -65,7 +65,7 @@ $srcDir  = Join-Path $here "Scripts"
 $dstDir  = Join-Path (Join-Path $modsDir $ModName) "Scripts"
 
 Write-Host ""
-Write-Host "PWBlueprint 部署" -ForegroundColor White
+Write-Host "PWProjection 部署" -ForegroundColor White
 Write-Host "游戏目录: $GameRoot"
 Write-Host "源:       $srcDir"
 Write-Host "目标:     $dstDir"
@@ -89,7 +89,7 @@ if ($gameProc) { Warn2 "游戏正在运行 — 干跑模式不写文件，可继
 # 崩溃归因用的【最小操作】：只把 mods.txt 里的 1 改成 0，不复制、不删除任何文件。
 # 这样"关掉 -> 测 -> 开回来"三件事互不影响，不会因为部署动作本身引入新变量。
 if ($Disable) {
-    Head "[启停] 关闭 PWBlueprint（只改 mods.txt，不动任何文件）"
+    Head "[启停] 关闭 PWProjection（只改 mods.txt，不动任何文件）"
     $content = [System.IO.File]::ReadAllText($modsTxt)
     $pat = "(?m)^\s*" + [regex]::Escape($ModName) + "\s*:\s*([01])\s*$"
     if ([regex]::IsMatch($content, $pat)) {
@@ -137,16 +137,16 @@ if ($DryRun) {
     Did ("复制 {0} 个文件, {1:N0} bytes" -f $srcFiles.Count, $totalBytes)
 
     # 网格覆盖表分两个文件:
-    #   pwbp_meshmap.default.json —— 随 mod 更新（每次部署覆盖成最新）
-    #   pwbp_meshmap.json         —— 用户自己的（只在不存在时创建）
+    #   pwpr_meshmap.default.json —— 随 mod 更新（每次部署覆盖成最新）
+    #   pwpr_meshmap.json         —— 用户自己的（只在不存在时创建）
     # ★ 原来只有一个文件，为了"保护用户修改"就只在不存在时复制。
     #   结果我把条目从 7 条扩到 33 条之后，游戏里还是旧的 7 条 ——
     #   部署"成功"了却完全没生效（日志里表现为「覆盖表 7 条」）。
     #   分两个文件才能既更新默认值又保护用户修改。
     foreach ($pair in @(
-        @{ Src = "pwbp_meshmap.default.json"; Always = $true;
+        @{ Src = "pwpr_meshmap.default.json"; Always = $true;
            What = "内置映射表（每次部署更新）" },
-        @{ Src = "pwbp_meshmap.json";         Always = $false;
+        @{ Src = "pwpr_meshmap.json";         Always = $false;
            What = "用户映射表（保留修改）" }
     )) {
         $msrc = Join-Path $srcDir $pair.Src
@@ -203,6 +203,26 @@ foreach ($name in $ObsoleteMods) {
     }
 }
 
+# ---- 改名后的旧目录（PWBlueprint -> PWProjection, 2026-09-28）------------
+# ★ 这里**故意不自动删除**：旧目录里可能有玩家的【蓝图】和【用户网格覆盖表】，
+#   删掉就是数据丢失。所以只把 mods.txt 里的旧条目**停用**（1 -> 0），并提示怎么迁移。
+$oldName = "PWBlueprint"
+$oldDir = Join-Path $modsDir $oldName
+if (Test-Path $oldDir) {
+    Warn2 "检测到旧目录 $oldName\（改名前的本体，里面可能有你的蓝图与用户覆盖表）"
+    Write-Host "    迁移建议（按需）:" -ForegroundColor Gray
+    Write-Host "      · 蓝图:       把 $oldName\blueprints\*.blueprint.json 复制到 $ModName\blueprints\" -ForegroundColor Gray
+    Write-Host "      · 用户覆盖表: 把 $oldName\Scripts\pwbp_meshmap.json 改名成 pwpr_meshmap.json 后放进 $ModName\Scripts\" -ForegroundColor Gray
+    Write-Host "      · 旧配置:     一般不用带（新版本会自动生成 pwpr_config.json）" -ForegroundColor Gray
+    Write-Host "    确认不需要之后，可以自己删除 $oldName\ 目录。" -ForegroundColor Gray
+
+    $pOld = "(?m)^\s*" + [regex]::Escape($oldName) + "\s*:\s*([01])\s*$"
+    if ([regex]::IsMatch($new, $pOld)) {
+        $new = [regex]::Replace($new, $pOld, "$oldName : 0")
+        Did "把 mods.txt 里的旧条目 $oldName 停用（改成 0；目录保留，数据还在）"
+    }
+}
+
 if ($new -ne $content -and -not $DryRun) {
     [System.IO.File]::WriteAllText($modsTxt, $new)
 }
@@ -231,7 +251,7 @@ Write-Host ("=" * 66) -ForegroundColor Cyan
 if ($DryRun) {
     Write-Host "干跑完成。去掉 -DryRun 才会真正修改。" -ForegroundColor Yellow
 } elseif ($Rollback) {
-    Write-Host "已回滚。重启游戏后 PWBlueprint 不再加载。" -ForegroundColor Green
+    Write-Host "已回滚。重启游戏后 PWProjection 不再加载。" -ForegroundColor Green
 } else {
     Write-Host "部署完成。接下来：" -ForegroundColor Green
     Write-Host ""
@@ -242,12 +262,12 @@ if ($DryRun) {
     Write-Host "  5) (可选) 按 O 探测屏幕提示通道 —— 想看游戏内中文提示就跑它" -ForegroundColor White
     Write-Host ""
     Write-Host "  日志:" -ForegroundColor Gray
-    Write-Host "    $dstDir\pwbp.log           (中文, 完整; '> ' 开头的行 = 屏幕上那一行)" -ForegroundColor Gray
-    Write-Host "    $dstDir\pwbp_probe.txt     (渲染能力探测 N)" -ForegroundColor Gray
-    Write-Host "    $dstDir\pwbp_ui.txt        (屏幕提示通道探测 O)" -ForegroundColor Gray
+    Write-Host "    $dstDir\pwpr.log           (中文, 完整; '> ' 开头的行 = 屏幕上那一行)" -ForegroundColor Gray
+    Write-Host "    $dstDir\pwpr_probe.txt     (渲染能力探测 N)" -ForegroundColor Gray
+    Write-Host "    $dstDir\pwpr_ui.txt        (屏幕提示通道探测 O)" -ForegroundColor Gray
     Write-Host "    $ue4ss\UE4SS.log           (控制台输出)" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  快速看日志（复制整行到 PowerShell）:" -ForegroundColor White
-    Write-Host "    Get-Content `"$dstDir\pwbp.log`" -Tail 60" -ForegroundColor Gray
+    Write-Host "    Get-Content `"$dstDir\pwpr.log`" -Tail 60" -ForegroundColor Gray
 }
 Write-Host ("=" * 66) -ForegroundColor Cyan

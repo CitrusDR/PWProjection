@@ -1,5 +1,5 @@
 --[[ ===========================================================================
-  PWBP · meshmap  ——  建筑类型 -> 静态网格资产
+  PWPR · meshmap  ——  建筑类型 -> 静态网格资产
 
   问题:
     实测 79 种建筑类型里只有 26 种能从 actor 上直接读到 StaticMesh。
@@ -14,16 +14,16 @@
     3. 结构件走【名字匹配】: 类型名 Wood_Foundation 拆成 wood + foundation，
        在注册表里找同时包含这两个词、且位于 Architecture 目录下的网格。
        规范化后比较（去掉 _ 和大小写），所以 SM_WoodFoundation 也能匹配。
-    4. 用户可以在 pwbp_meshmap.json 里写死映射，优先于自动匹配。
-    5. 探测键会把注册表整个导出成 pwbp_meshes.txt，方便把匹配结果
+    4. 用户可以在 pwpr_meshmap.json 里写死映射，优先于自动匹配。
+    5. 探测键会把注册表整个导出成 pwpr_meshes.txt，方便把匹配结果
        固化成静态表（下一版就不用每次靠猜）。
 
   注意: 本文件只做 FindAllOf + GetFullName（只读）。LoadAsset 只在
         真正要渲染时才会被调用。
 =========================================================================== ]]
 
-local Util = require("pwbp_util")
-local Json = require("pwbp_json")
+local Util = require("pwpr_util")
+local Json = require("pwpr_json")
 
 local MeshMap = {}
 
@@ -258,23 +258,23 @@ end
 -- 覆盖表
 --
 -- 分成两个文件，各管各的:
---   pwbp_meshmap.default.json  —— 随 mod 分发，每次部署都会覆盖成最新版
---   pwbp_meshmap.json          —— 用户自己的，部署时【绝不覆盖】
+--   pwpr_meshmap.default.json  —— 随 mod 分发，每次部署都会覆盖成最新版
+--   pwpr_meshmap.json          —— 用户自己的，部署时【绝不覆盖】
 -- 合并规则: 先读 default，再读用户表，用户表覆盖 default。
 --
 -- ★ 为什么改成分两个文件（2026-09-26 深夜踩的坑）:
---   原来只有一个 pwbp_meshmap.json，部署脚本为了"保护用户修改"就
+--   原来只有一个 pwpr_meshmap.json，部署脚本为了"保护用户修改"就
 --   只在文件不存在时复制。结果我把条目从 7 条扩到 33 条之后，
 --   游戏里那份还是旧的 7 条 —— 部署"成功"了，功能却没更新。
 --   日志里露出来的证据是 `网格覆盖表: 覆盖表 7 条`（应该是 33 条）。
 -- --------------------------------------------------------------------------
 
 function MeshMap.override_path(script_dir)
-    return Util.join(script_dir, "pwbp_meshmap.json")
+    return Util.join(script_dir, "pwpr_meshmap.json")
 end
 
 function MeshMap.default_path(script_dir)
-    return Util.join(script_dir, "pwbp_meshmap.default.json")
+    return Util.join(script_dir, "pwpr_meshmap.default.json")
 end
 
 --- 读一个映射文件并并进 MeshMap.overrides。返回 加载条数, 说明
@@ -517,7 +517,7 @@ function MeshMap.component_mesh_lines(max_lines)
         for t in pairs(MeshMap.overrides) do known[t] = true end
     end
 
-    out[#out + 1] = "=== ★★★ 查到了、但覆盖表里【还没有】的类型（照着填进 pwbp_meshmap.json）==="
+    out[#out + 1] = "=== ★★★ 查到了、但覆盖表里【还没有】的类型（照着填进 pwpr_meshmap.json）==="
     local n_new = 0
     for i = 1, #type_order do
         local t = type_order[i]
@@ -909,7 +909,7 @@ end
 --- 把注册表导出（含匹配结果），用于把自动匹配固化成静态表
 function MeshMap.discovery_lines(types)
     local out = {}
-    out[#out + 1] = "# PWBP 静态网格注册表导出"
+    out[#out + 1] = "# PWPR 静态网格注册表导出"
     out[#out + 1] = "# 时间: " .. Util.now_iso()
     out[#out + 1] = "# 已加载的 /Game/ 下 UStaticMesh 数量: " .. tostring(#MeshMap.entries)
     out[#out + 1] = ""

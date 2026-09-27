@@ -1,8 +1,8 @@
 {
-  "_what": "PWBP 网格覆盖表 —— 【用户自己的】。优先级高于内置表（pwbp_meshmap.default.json）。",
+  "_what": "PWPR 网格覆盖表 —— 【用户自己的】。优先级高于内置表（pwpr_meshmap.default.json）。",
   "_why_this_file": "内置表随 mod 更新而更新（部署时会覆盖）。这个文件部署时【绝不覆盖】，所以你在这里写的条目永远不会丢。",
   "_when_to_edit": "投影里某件建筑形状明显不对 / 方向不对 / 完全没画出来时，在这里写死。",
-  "_how_to_add": "照下面例子的格式加。左边 = 蓝图里的短类型名（看 pwbp.log 的类型列表），右边 = 完整资产路径（在 Scripts\\pwbp_meshes.txt 第 1 节里搜关键字）。特殊值 \"-\" 表示【这个类型不要画】。改完按 F8 重载，不用重启游戏。",
+  "_how_to_add": "照下面例子的格式加。左边 = 蓝图里的短类型名（看 pwpr.log 的类型列表），右边 = 完整资产路径（在 Scripts\\pwpr_meshes.txt 第 1 节里搜关键字）。特殊值 \"-\" 表示【这个类型不要画】。改完按 F8 重载，不用重启游戏。",
 
   "_example_correct": "  \"某类型名\": \"/Game/Pal/Model/Prop/Architecture/某目录/SM_某网格.SM_某网格\",",
   "_example_suppress": "  \"某类型名\": \"-\",",
