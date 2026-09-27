@@ -208,6 +208,15 @@ foreach ($name in $ObsoleteMods) {
 #   删掉就是数据丢失。所以只把 mods.txt 里的旧条目**停用**（1 -> 0），并提示怎么迁移。
 $oldName = "PWBlueprint"
 $oldDir = Join-Path $modsDir $oldName
+# ① 不管旧目录还在不在，只要 mods.txt 里还留着旧条目，就把它停用（1 -> 0）。
+#    为什么: 玩家可能先把旧目录删掉了，但 mods.txt 里的 `PWBlueprint : 1` 还在
+#    —— UE4SS 会去找一个不存在的 mod，日志里一堆警告。
+$pOld = "(?m)^\s*" + [regex]::Escape($oldName) + "\s*:\s*([01])\s*$"
+if ([regex]::IsMatch($new, $pOld)) {
+    $new = [regex]::Replace($new, $pOld, "$oldName : 0")
+    Did "把 mods.txt 里的旧条目 $oldName 停用（改成 0）"
+}
+# ② 旧目录还在的话，提示怎么迁移数据（**不自动删**）
 if (Test-Path $oldDir) {
     Warn2 "检测到旧目录 $oldName\（改名前的本体，里面可能有你的蓝图与用户覆盖表）"
     Write-Host "    迁移建议（按需）:" -ForegroundColor Gray
@@ -215,12 +224,6 @@ if (Test-Path $oldDir) {
     Write-Host "      · 用户覆盖表: 把 $oldName\Scripts\pwbp_meshmap.json 改名成 pwpr_meshmap.json 后放进 $ModName\Scripts\" -ForegroundColor Gray
     Write-Host "      · 旧配置:     一般不用带（新版本会自动生成 pwpr_config.json）" -ForegroundColor Gray
     Write-Host "    确认不需要之后，可以自己删除 $oldName\ 目录。" -ForegroundColor Gray
-
-    $pOld = "(?m)^\s*" + [regex]::Escape($oldName) + "\s*:\s*([01])\s*$"
-    if ([regex]::IsMatch($new, $pOld)) {
-        $new = [regex]::Replace($new, $pOld, "$oldName : 0")
-        Did "把 mods.txt 里的旧条目 $oldName 停用（改成 0；目录保留，数据还在）"
-    }
 }
 
 if ($new -ne $content -and -not $DryRun) {
