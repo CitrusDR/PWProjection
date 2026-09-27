@@ -18,14 +18,18 @@
 param(
     [Parameter(Mandatory = $true)][string]$Label,
     [string]$GameMod = "D:\Steam\steamapps\common\Palworld\Mods\NativeMods\UE4SS\Mods\PWProjection",
-    [switch]$SkipDeployCheck
+    [switch]$SkipDeployCheck,
+    [switch]$Force            # 允许覆盖已存在的同名快照目录（默认拒绝）
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot          # 仓库根
 $dest = Join-Path $root ("backups\" + $Label)
 $stage = Join-Path $dest "_stage"
-$zip = Join-Path $dest ("PWProjection_" + $Label + ".zip")
+# zip 名: 固定前缀 PWProjection_；标签本身已经以它开头时不再重复加（免得出现 PWProjection_..._PWProjection_...）
+$zipPrefix = "PWProjection_"
+$zipLabel = if ($Label -like "*PWProjection*") { $Label } else { $zipPrefix + $Label }
+$zip = Join-Path $dest ($zipLabel + ".zip")
 
 Write-Host "== PWProjection 快照 ==" -ForegroundColor Cyan
 Write-Host ("  仓库: " + $root)
@@ -78,6 +82,15 @@ else {
 }
 
 # ---- 2. 打包 --------------------------------------------------------------
+# ★ 防呆（2026-09-28 真的踩到过）: 目标目录已存在时**不要**默默覆盖 ——
+#   上一次就是因为重用了旧标签，把改名前的快照目录整个删掉了
+#   （那个 zip 没进 git，找不回来）。要覆盖得显式加 -Force。
+if ((Test-Path $dest) -and (-not $Force)) {
+    Write-Host ("  [!] 目标已存在: " + $dest) -ForegroundColor Yellow
+    Write-Host "      ⇒ 换一个标签（推荐 日期_版本说明，例如 2026-09-28_跨存档投影可用版）；" -ForegroundColor Yellow
+    Write-Host "        确实要覆盖就加 -Force。" -ForegroundColor Yellow
+    exit 2
+}
 if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 foreach ($part in @("mod\PWProjection", "docs", "tools")) {
