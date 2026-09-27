@@ -1,0 +1,51 @@
+# ---- 临时工作目录（跑检查/试验的输出，不属于源码）----
+out/
+
+# ---- 备份压缩包（二进制；内容本来就已在仓库里，说明与校验清单仍保留）----
+backups/**/*.zip
+backups/**/_stage/
+
+# ---- Python 缓存 ----
+__pycache__/
+*.pyc
+
+# ---- 运行期产物 ----
+#（正常情况下这些文件都在游戏目录里，这里是兜底，避免误提交）
+*.log
+pwbp_ui.txt
+pwbp_capabilities.json
+pwbp_config.json
+pwbp_meshes.txt
+
+# ---- 🔴 凭据 / 密钥（永远不要提交）----
+# 这一节是"防手滑"：即使不小心把密钥文件放进工作区，也不会被 add 进去。
+.env
+.env.*
+*.env
+secrets.*
+secret.*
+credentials*
+credential*
+*_token*
+*token.json
+*apikey*
+*api_key*
+*.pem
+*.key
+*.pfx
+*.p12
+*.keystore
+*.jks
+.npmrc
+.pypirc
+.netrc
+_netrc
+id_rsa*
+id_ed25519*
+*.kdbx
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

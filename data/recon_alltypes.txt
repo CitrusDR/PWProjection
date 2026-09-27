@@ -1,0 +1,93 @@
+﻿################ 全部建筑类型逐个验证 ################
+对每种类型取一个样本，验证: 类型名 / 世界坐标 / 旋转 / mesh
+
+PalBuildObject 总数 = 649
+
+共 79 种类型。逐个验证:
+
+短类型名                   数量  世界坐标                       旋转(Yaw)            mesh
+----------------------------------------------------------------------------------------------------------------------------------
+Wood_Foundation                  351  X=-161481.01 Y=-63697.72 Z=-942.94 -28.7                  -
+MedicalPalBed_02                  70  X=-276795.15 Y=206935.56 Z=-1279.95 -173.9                 SM_PalBedPrimitive
+MedicalPalBed_03                  35  X=-102405.28 Y=43077.93 Z=685.52   -97.6                  SM_PalBedMedieval
+OilPump02                         14  X=-159922.69 Y=-61814.66 Z=-946.11 -28.7                  -
+ItemChest_03                      10  X=-103476.02 Y=40557.15 Z=685.51   -7.6                   -
+FarmBlockRecipe                    9  X=-105040.75 Y=39126.88 Z=685.52   -7.6                   -
+EnergyStorage_Electric             8  X=-100940.68 Y=40145.95 Z=685.52   171.1                  SM_EnergyStorage
+ItemChest                          7  X=-346060.82 Y=261808.18 Z=4015.56 77.1                   -
+Wood_Wall_V2                       7  X=-106341.91 Y=41925.93 Z=684.46   172.4                  -
+Wood_Roof                          7  X=-106090.59 Y=42295.84 Z=1009.46  -7.6                   -
+ItemChest_02                       7  X=-104373.88 Y=40917.80 Z=685.52   -7.6                   -
+PalBoxV2                           5  X=-275832.21 Y=206536.36 Z=-1279.95 108.9                  -
+Spa_2                              5  X=-100990.19 Y=42468.07 Z=685.52   -7.6                   SM_PalSpaLarge
+ItemChest_04                       5  X=-105507.29 Y=41410.58 Z=685.52   -7.6                   -
+BreedFarm                          5  X=-277842.49 Y=204818.70 Z=-1279.95 35.4                   -
+EnergyGenerator_Large              5  X=-160596.16 Y=-62973.27 Z=-941.88 -28.7                  SM_Capacitor_Large
+FarmBlockV2_Berries                4  X=-345123.63 Y=263234.98 Z=4006.81 -71.6                  -
+MedicalPalBed_04                   4  X=-102292.12 Y=43855.89 Z=685.52   -99.2                  SM_PalBedMedievalLarge
+MonsterFarm                        4  X=-347319.77 Y=261773.69 Z=4006.12 34.8                   -
+Wood_WindowWall                    4  X=-105826.87 Y=41251.59 Z=684.46   -97.6                  -
+BaseCampWorkHard                   4  X=-347420.51 Y=264032.12 Z=4006.81 -71.1                  SM_SurveillanceTable
+PalFoodBox                         3  X=-160700.26 Y=-61856.80 Z=-941.88 72.3                   -
+AncientEnergyGenerator             3  X=-101290.47 Y=40266.04 Z=685.52   171.1                  -
+GuildChest                         3  X=-161234.62 Y=-60735.01 Z=-941.88 -28.7                  -
+FishingPond02                      3  X=-104802.55 Y=44695.47 Z=685.51   -97.0                  -
+Spa                                3  X=-345525.96 Y=264446.72 Z=4006.81 -71.6                  -
+BaseCampWorkerExtraStation         2  X=-106442.00 Y=42516.39 Z=685.51   172.4                  -
+FarmBlockV2_tomato                 2  X=-162107.25 Y=-58453.84 Z=-941.89 -28.3                  -
+PalMedicineBox                     2  X=-102324.28 Y=42646.74 Z=685.52   -97.6                  -
+CampFire                           2  X=-346639.51 Y=262957.37 Z=4005.85 -118.0                 SM_Campfire
+WorkSpeedIncrease1                 2  X=-105657.28 Y=42517.88 Z=685.51   82.4                   SM_BrainwashingDevice
+MiningTool                         2  X=-162039.79 Y=-60655.95 Z=-941.88 -28.7                  SM_MiningTool
+SanityDecrease1                    2  X=-105641.80 Y=42633.43 Z=685.52   82.4                   SM_BrainwashingDevice
+AncientBlastFurnace                2  X=-102902.48 Y=39235.99 Z=685.52   82.4                   -
+FarmBlockV2_Lettuce                2  X=-162377.73 Y=-58955.41 Z=-941.88 -28.3                  -
+AncientMultiProduct                2  X=-101435.32 Y=39343.72 Z=685.52   171.1                  -
+DefenseWait                        2  X=-104696.53 Y=43196.92 Z=685.51   -94.2                  -
+BaseCampItemDispenser              1  X=-104227.89 Y=43001.68 Z=685.52   172.4                  -
+AncientWorkBench                   1  X=-102934.57 Y=41460.60 Z=685.51   -7.6                   SM_WorkBenchAncient
+DimensionPalStorage                1  X=-105139.73 Y=43900.42 Z=685.52   -97.1                  -
+RepairBench                        1  X=-102978.84 Y=41130.03 Z=685.52   -7.6                   SM_RepairTable
+WeaponFactory_Dirty_4              1  X=-102392.84 Y=41325.55 Z=685.51   171.1                  -
+OperatingTable                     1  X=-106464.82 Y=42345.96 Z=685.52   172.4                  SM_OperatingTable
+BuildableGoddessStatue             1  X=-100794.83 Y=41074.57 Z=685.52   171.1                  -
+ToolBoxV1                          1  X=-105839.10 Y=42542.23 Z=685.52   82.4                   SM_ToolBox
+MedicineFacility_03                1  X=-102070.78 Y=42612.79 Z=685.52   -97.6                  SM_MedicineFacilityFuture
+DismantlingConveyor                1  X=-106952.96 Y=42007.76 Z=685.52   172.4                  -
+HugeKitchen                        1  X=-103371.07 Y=41528.07 Z=685.52   -7.6                   SM_KitchenMedievalLarge
+OlympicCauldron                    1  X=-105462.45 Y=42511.48 Z=685.51   82.4                   SM_Brazier
+MultiElectricHatchingPalEgg        1  X=-104389.39 Y=41664.45 Z=685.51   -7.6                   -
+PalFoodBoxCool                     1  X=-104763.08 Y=40154.50 Z=685.52   -7.6                   -
+TableDresser01_Stone               1  X=-105367.67 Y=41666.90 Z=685.51   -97.6                  -
+Stone_WallGate                     1  X=-105733.07 Y=43458.67 Z=684.46   -7.6                   -
+Altar                              1  X=-633407.49 Y=-301964.96 Z=33452.92 -139.5                 -
+Lab                                1  X=-100841.37 Y=40778.25 Z=685.52   171.1                  -
+MultiElectricHatchingPalEggWithBreed     1  X=-104712.69 Y=43847.47 Z=685.52   -97.1                  -
+DisplayCharacter                   1  X=-106242.92 Y=43526.26 Z=682.78   -7.0                   -
+CookingStove                       1  X=-160502.16 Y=-61919.86 Z=-941.88 72.3                   SM_KitchenMedieval
+Factory_Hard_4                     1  X=-101356.51 Y=41162.79 Z=685.51   171.1                  -
+AncientRelicRecycler               1  X=-105279.02 Y=41076.80 Z=685.51   80.9                   -
+BaseCampWorkHard_03                1  X=-103692.64 Y=42167.76 Z=685.52   -7.6                   -
+Snowman                            1  X=-105114.39 Y=42464.87 Z=685.51   82.4                   SM_Snowman
+Wood_Stair                         1  X=-106143.68 Y=41899.38 Z=684.46   82.4                   -
+Farm_SkillFruits                   1  X=-105443.73 Y=39384.66 Z=685.52   -7.6                   -
+Wood_DoorWall                      1  X=-105099.44 Y=42163.10 Z=684.46   -7.6                   -
+Clinic                             1  X=-102538.27 Y=42675.40 Z=685.52   -97.6                  SM_Infirmary
+AncientCookingStove                1  X=-103320.61 Y=41904.83 Z=685.52   -7.6                   SM_KitchenAncient
+WorkBench_SkillUnlock              1  X=-102891.66 Y=41780.96 Z=685.51   -7.6                   PalSkillUnlockWorkbench
+Expedition                         1  X=-106673.08 Y=39992.95 Z=682.81   32.1                   -
+Refrigerator                       1  X=-104039.82 Y=39865.82 Z=685.51   -97.6                  -
+FlourMill                          1  X=-102855.08 Y=38629.65 Z=685.51   82.4                   -
+MedicalPalBed_06                   1  X=-102746.43 Y=44520.25 Z=685.52   -99.2                  SM_PalBedAncient
+CharacterSkinChange                1  X=-105499.36 Y=41691.89 Z=685.52   82.8                   -
+PlayerBed_03                       1  X=-106239.75 Y=41508.67 Z=685.52   172.4                  SM_BedMedieval
+IceCrusher                         1  X=-102497.37 Y=38581.75 Z=685.51   172.4                  -
+SphereFactory_Black_04             1  X=-101900.28 Y=41248.19 Z=685.52   171.1                  -
+CharacterRankUp                    1  X=-105469.95 Y=43941.37 Z=685.52   -97.1                  -
+CompositeDesk                      1  X=-106448.77 Y=41940.24 Z=685.52   172.4                  SM_DraftingDesk
+HatchingPalEgg                     1  X=-276191.23 Y=205656.25 Z=-1279.95 52.2                   -
+
+统计: 坐标可得 79/79   旋转可得 79/79   mesh可得 26/79
+
+请把 recon_alltypes.txt 发给我。
+这份表就是蓝图格式的类型表：短类型名 + 坐标 + 旋转 + mesh。

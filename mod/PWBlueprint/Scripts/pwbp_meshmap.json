@@ -1,0 +1,26 @@
+{
+  "_what": "PWBP 网格覆盖表 —— 【用户自己的】。优先级高于内置表（pwbp_meshmap.default.json）。",
+  "_why_this_file": "内置表随 mod 更新而更新（部署时会覆盖）。这个文件部署时【绝不覆盖】，所以你在这里写的条目永远不会丢。",
+  "_when_to_edit": "投影里某件建筑形状明显不对 / 方向不对 / 完全没画出来时，在这里写死。",
+  "_how_to_add": "照下面例子的格式加。左边 = 蓝图里的短类型名（看 pwbp.log 的类型列表），右边 = 完整资产路径（在 Scripts\\pwbp_meshes.txt 第 1 节里搜关键字）。特殊值 \"-\" 表示【这个类型不要画】。改完按 F8 重载，不用重启游戏。",
+
+  "_example_correct": "  \"某类型名\": \"/Game/Pal/Model/Prop/Architecture/某目录/SM_某网格.SM_某网格\",",
+  "_example_suppress": "  \"某类型名\": \"-\",",
+
+  "_known_missing": "★ 目前【已知但还没找到资产】的 7 种建筑（搜遍 2463 个网格都没有可辩护的候选）。要补它们，走到那栋楼旁边按 Y 重新采集，让游戏自己把网格名报出来，再填到这里。",
+  "_known_missing_list": "观察笼(DisplayCharacter?)、冷却粉碎机(IceCrusher?)、磨粉机(FlourMill)、古代文明物质生成器(AncientMultiProduct?)、高等文明作业工厂(Factory_Hard_4?)、高等文明帕鲁球工厂(SphereFactory_Black_04?)、高等文明武器工厂(WeaponFactory_Dirty_4?)",
+
+  "_candidates_unverified": "★ 下面这些是【注册表里存在、但没被任何类型引用】的资产 —— 也就是'可能的候选'。想试就把对应的行改成真条目（去掉 _cand_ 前缀），按 F8 后看投影形状对不对。10 秒就能验证一条。",
+  "_cand_DisplayCharacter": "候选 /Game/Pal/Model/Other/PalCage/SM_PalCage.SM_PalCage   —— 观赏笼很可能是这个（PalCage = 帕鲁笼）",
+  "_cand_DisplayCharacter2": "同一目录还有 /Game/Pal/Model/Other/PalCage/SM_PalCageDoor.SM_PalCageDoor（笼门，大概是子件）",
+  "_cand_PalFoodBox": "候选 /Game/Pal/Model/Prop/Architecture/PalCoolingFeedBox/SM_PalCoolingFeedBox.SM_PalCoolingFeedBox —— 内置表用的是 _Food 子网格（食物），箱体本身可能是这个",
+  "_cand_PalFoodBoxCool": "同上",
+  "_cand_PalFoodBox3": "另一个可能: /Game/Pal/Model/Prop/Architecture/PalManger/SM_PalManger.SM_PalManger（食槽）",
+  "_cand_Altar": "另一个可能: /Game/Pal/Model/Prop/Architecture/PalSummoningStand/SM_PalSummoningStand.SM_PalSummoningStand（召唤台）",
+  "_cand_OilPump02": "弱候选 /Game/Pal/Model/Other/OilField/SM_OilField.SM_OilField —— 名字不够对得上，慎用",
+  "_cand_BreedFarm": "如果配种牧场形状不对，可试 /Game/Pal/Model/Prop/Architecture/PalMatingStationAncient/SM_PalMatingStationAncient.SM_PalMatingStationAncient",
+  "_cand_PalManger": "食槽类建筑（如果以后出现对应类型）: /Game/Pal/Model/Prop/Architecture/PalManger/SM_PalManger.SM_PalManger",
+  "_cand_note_roomService": "以上都是【未验证】的。我已经因为猜错被纠正过两次（FarmBlockRecipe / Farm_SkillFruits），所以新候选一律只记录、不自动启用 —— 请自己确认后再变成真条目。",
+
+  "_user_entries_start_below": ""
+}
