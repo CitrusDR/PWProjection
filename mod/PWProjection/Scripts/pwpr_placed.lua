@@ -42,6 +42,9 @@ Placed.refs = {}          -- [记录序号] = actor —— 用来判断"拆掉�
 Placed.pending = {}       -- [记录序号] = true —— 已放上、**等批量窗口结束**再一起隐藏
 Placed.pending_actor = {} -- [记录序号] = actor（批量窗口结束时一起并进 refs）
 Placed.last_n = 0         -- 上一次隐藏了几件
+-- ★ 进度版本号: 只要"已放上的名单"变过就 +1。用途 = 让调用方**只在真的变了**时才
+--   把进度同步给"位置/进度记忆"（否则看门狗每 2.5 秒都会标脏 ⇒ 白白多写盘）。
+Placed.version = 0
 Placed.last_src = nil     -- 上一次的数据来源（日志/状态里显示）
 Placed.max_records = 4000 -- 保险: 记录特别多时不全扫（避免长时间卡顿）
 
@@ -71,6 +74,7 @@ function Placed.forget()
     Placed.pending = {}
     Placed.pending_actor = {}
     Placed.last_n = 0
+    Placed.version = Placed.version + 1     -- 进度变了（清空也算变）
 end
 
 --- ★ **精确隐藏一条记录**（吸附那边告诉我们"我正要往这一条放"）。
@@ -87,6 +91,7 @@ function Placed.hide_now(rec_idx)
     if Placed.hidden[rec_idx] == true then return false end
     if Placed.pending[rec_idx] == true then return false end
     Placed.pending[rec_idx] = true
+    Placed.version = Placed.version + 1      -- 进度变了（见 Placed.version 的说明）
     -- ★ 记下"最后一次入队的时间" —— 队列表用它判断"安静够久了没有"
     --   （批量清算除了定时回调，还有一条兜底路径看这个值，见 main 的 watch tick）
     Placed.pending_since = os.clock()
@@ -99,6 +104,111 @@ function Placed.pending_idle_s()
     if Placed.pending_since == nil then return 0.0 end
     if Placed.pending_count() == 0 then return 0.0 end
     return os.clock() - Placed.pending_since
+end
+
+--- 一条记录在某个"投影变换"下的世界坐标（厘米）—— 对外公开，
+--- 供"进度跨锚点换算"使用（内部那个是 local，这里包一层）。
+function Placed.record_world_at(place, b)
+    if type(place) ~= "table" or type(b) ~= "table" then return nil end
+    return record_world(place, b)
+end
+
+--- ★★★ 2026-09-29 玩家实测（三个问题同一个根因）: **进度是"序号"，而序号的世界位置
+---   依赖锚点**。按 `H` 挪一下投影（哪怕只挪几十米），那批序号对应的位置就整体平移了 ⇒
+---   于是"藏错了件"（投影缺了不该缺的）或"什么都不藏"（K 重开后建过的又画出来）。
+---   ⇒ 这里按**几何**把一份序号从一个锚点换算到另一个锚点:
+---     对每个序号，算出它在 `from_place` 下的世界坐标，再在 `to_place` 下找**最近的记录**
+---     （容差内、一对一贪心）⇒ 返回新的序号表。
+---   容差取 200 厘米: 覆盖"锚点挪了几米"（记录间距通常 ≥ 一个地基边长 ≈ 2~4 米）。
+function Placed.convert_indices(bp, from_place, indices, to_place, tol_cm)
+    if type(bp) ~= "table" or type(bp.buildings) ~= "table" then return nil end
+    if type(from_place) ~= "table" or type(to_place) ~= "table" then return nil end
+    if type(indices) ~= "table" then return nil end
+    local tol = tonumber(tol_cm) or 200.0
+    local tol2 = tol * tol
+
+    -- 目标锚点下所有记录的世界坐标（一次算好）
+    local dst = {}
+    for i = 1, #bp.buildings do
+        local w = Placed.record_world_at(to_place, bp.buildings[i])
+        if w ~= nil then
+            dst[#dst + 1] = { idx = i, x = w[1], y = w[2], z = w[3] }
+        end
+    end
+    if #dst == 0 then return nil end
+
+    local pairs_all = {}
+    for _, src_idx in ipairs(indices) do
+        local b = bp.buildings[src_idx]
+        if type(b) == "table" then
+            local w = Placed.record_world_at(from_place, b)
+            if w ~= nil then
+                for j = 1, #dst do
+                    local d = dst[j]
+                    local dx, dy, dz = d.x - w[1], d.y - w[2], d.z - w[3]
+                    local d2 = dx * dx + dy * dy + dz * dz
+                    if d2 <= tol2 then
+                        pairs_all[#pairs_all + 1] =
+                            { src = src_idx, dst = d.idx, d2 = d2 }
+                    end
+                end
+            end
+        end
+    end
+    table.sort(pairs_all, function(a, b2)
+        if a.d2 ~= b2.d2 then return a.d2 < b2.d2 end
+        return a.src < b2.src
+    end)
+    local out, used_dst, seen_src = {}, {}, {}
+    for k = 1, #pairs_all do
+        local pr = pairs_all[k]
+        if seen_src[pr.src] ~= true and used_dst[pr.dst] ~= true then
+            seen_src[pr.src] = true
+            used_dst[pr.dst] = true
+            out[#out + 1] = pr.dst
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+--- ★ 导出"已放上"的进度（记录序号数组）—— 给"位置/进度记忆"落盘用。
+---   放在这里而不是直接读 Placed.hidden，是为了让"进度"只有这一个出口。
+function Placed.export_list()
+    local out = {}
+    for idx in pairs(Placed.hidden) do out[#out + 1] = idx end
+    table.sort(out)
+    return out
+end
+
+--- ★ 从记忆里恢复进度（下次加载同一张蓝图时，先按上次的进度把已建好的那批不画）。
+---   `max_idx` = 当前蓝图的记录总数 ⇒ 超出范围的序号一律丢掉
+---   （蓝图文件重名概率低，但"宁可丢也不能画错"）。
+function Placed.load_from(list, max_idx)
+    if type(list) ~= "table" then return 0 end
+    local n, dropped = 0, 0
+    for _, idx in ipairs(list) do
+        local i = tonumber(idx)
+        if i ~= nil and (max_idx == nil or i <= max_idx) then
+            Placed.hidden[i] = true
+            n = n + 1
+        elseif i ~= nil then
+            dropped = dropped + 1
+        end
+    end
+    if dropped > 0 then
+        Log.emit(string.format(
+            "  [placed] 记忆里有 %d 条进度超出当前蓝图范围，已丢掉", dropped))
+    end
+    if n > 0 then Placed.version = Placed.version + 1 end   -- 进度变了
+    return n
+end
+
+--- ★ 这一条记录是不是"已经放上过了"（已隐藏，或在待处理队列里）。
+--- 用途: 吸附的"防误配"闸 —— 已经放上的位置不要再把人往那儿按（那儿已被占住）。
+function Placed.is_taken(rec_idx)
+    if rec_idx == nil then return false end
+    return Placed.hidden[rec_idx] == true or Placed.pending[rec_idx] == true
 end
 
 --- 等批量窗口结束时调用: 把"待隐藏"的挪进"隐藏"名单，返回这次的记录序号表。
@@ -115,6 +225,7 @@ function Placed.take_pending()
     Placed.pending_actor = {}
     Placed.pending_since = nil
     Placed.last_n = Placed.count()
+    if #list > 0 then Placed.version = Placed.version + 1 end   -- 进度变了
     return list
 end
 
@@ -167,6 +278,7 @@ function Placed.unhide(rec_idx)
         Placed.last_n = Placed.count()
         did = true
     end
+    if did then Placed.version = Placed.version + 1 end          -- 进度变了
     return did
 end
 
@@ -179,7 +291,7 @@ end
 
 --- ★ 全扫一遍: 把"已经放上了"的记录标出来。
 --- 返回 隐藏件数, 说明（失败时返回 nil, 原因）
-function Placed.refresh(bp, place)
+function Placed.refresh(bp, place, claimed_outside)
     -- ★★ 自保: 这条路径要**枚举关卡建筑**，而 `level.Actors` 会保留已摧毁的
     --   actor（读它 = 原生访问违例，见 pwpr_config.lua 的 ghost_hide_enum）。
     --   默认关闭；只有显式打开才允许跑。
@@ -237,8 +349,21 @@ function Placed.refresh(bp, place)
     if anchors == nil then
         return nil, "扫真实建筑失败: " .. tostring(src)
     end
+    -- ★★★ 2026-09-29 玩家实测抓到的第二个问题:
+    --   "切换回原来的蓝图位置，反倒是把所有建过/没建过的都投影了"。
+    --   原因: 这次扫描如果**一件参照都没扫到**，`apply_anchors` 会算出空名单
+    --   ⇒ 把"已经放上的"整个清空 ⇒ 投影把建过的也画出来 ✗
+    --   ⇒ 现在: **扫不到参照 = 这次没测到东西** ⇒ **保留上一次的名单**（不清空）。
+    --   这样"拆掉之后按 K 重放"仍然有效（只要附近还有别的参照 ⇒ 名单会重算），
+    --   但"在别的地方/扫描失败"不会把进度洗掉。
+    if #anchors == 0 then
+        Placed.last_src = "扫到 0 件参照 ⇒ 本次不更新已放上名单（保留上次的 "
+            .. tostring(Placed.count()) .. " 件）"
+        Log.emit("  [placed] " .. Placed.last_src)
+        return Placed.count(), Placed.last_src
+    end
     -- 剩下的匹配/点名逻辑和"分片全扫"共用（见 apply_anchors）
-    return Placed.apply_anchors(bp, place, anchors)
+    return Placed.apply_anchors(bp, place, anchors, claimed_outside)
 end
 
 --- ★★ **分片全扫**（2026-09-29 加的，为修"每次刷新都卡一下"）
@@ -328,87 +453,116 @@ end
 
 --- 用一批"真实建筑参照"重算隐藏名单。返回"变化了的记录序号表"。
 --- （完整全扫 `refresh` 与分片全扫 `scan_step` 共用这一段）
+--- ★★★ 2026-09-29 玩家实测（问题 2 最后一次）:
+---   「H 移动的时候展示的是不完整的投影（排除了已放置的）」。
+---   真因: 扫描是"拿真实建筑按位置去认领记录"，而**旧基地的建筑也可能正好落在
+---   新位置的网格上**（规则网格平移整格 ⇒ 几何上完全无法区分）⇒ 它把**别处的**建筑
+---   认成"这里建过" ⇒ 刚按 H 放下的新投影就缺件 ✗
+---   （新加的"排他表"就是为此: 一条实物如果已经被**别的记录**认领了，这次扫描不许再认领）
 function Placed.apply_anchors(bp, place, anchors)
+    -- ★★★★★ 2026-09-29 玩家实测（问题 2 的最终解）—— **扫描只减不增**:
+    --
+    -- 历史: 这个函数原来是"拿真实建筑按位置**认领**记录"（认领 = 往名单里加）。
+    --   而蓝图是**规则网格** ⇒ 网格平移整数格之后，"别处已建好的那一片"会**正好落在
+    --   新位置的网格上** ⇒ 几何上完全无法区分 ⇒ 被误认成"这里建过" ⇒
+    --   ① 按 `H` 放到新位置的投影立刻缺件（"W1 对应的位置还是没有显示"）✗
+    --   ② 在 B 放的件会被算到 A 的头上（"切回 A，W1 和 W2 都没显示"）✗
+    --   我试过"排他表"去救（一条实物只归一处），但治标不治本 —— 认领这件事本身就带歧义。
+    --
+    -- ⇒ 现在的职责划分（简单、可预测）:
+    --   · **"已放上"名单只由两处产生**: ① `Placed.hide_now`（吸附时的**精确通道** ——
+    --     它明确知道"我正要往第几条放"，不需要猜）；② 记录里存的进度（`Resume`）。
+    --   · **扫描只负责"减"**: 名单里某一条，如果它的世界坐标附近**没有**真实建筑了
+    --     ⇒ 说明被拆了 ⇒ 从名单里去掉（这就是"拆掉自动恢复"）。
+    --   · **扫描绝不往里加** ⇒ 不会再出现"别处的建筑被认成本处建过"这类串味 ✓
+    --
+    -- 代价（明确写在这里）: **不是通过本模组放的老建筑不会被自动识别**（投影会照常画它们）。
+    --   要做到"旧基地也认出来"，就按 `K` 时让吸附去逐件放置（精确通道会登记）——
+    --   这比"猜"可靠得多；而且"缺件显示"本来就是给"用蓝图继续建"用的。
     local near_cm = tonumber(cfg_get("ghost_hide_placed_cm")) or 40.0
     local near2 = near_cm * near_cm
     local n_rec = #bp.buildings
+    local prev_hidden = Placed.hidden or {}
 
-    -- 按类型分组（同一类型内找最近的实物，几百个参照也只扫一遍）
-    local by_type = {}
+    -- 参照（真实建筑）按 1 米网格归档，方便"这一条附近还有没有实物"的查询
+    local span = math.max(1, math.ceil(near_cm / 100.0))
+    local grid = {}
     for i = 1, #anchors do
         local a = anchors[i]
-        local k = Util.norm_id(a.t)
-        if k ~= "" then
-            local l = by_type[k]
-            if l == nil then l = {}; by_type[k] = l end
-            l[#l + 1] = a
-        end
+        local k = string.format("%d:%d:%d", math.floor(a.x / 100.0),
+            math.floor(a.y / 100.0), math.floor(a.z / 100.0))
+        local l = grid[k]
+        if l == nil then l = {}; grid[k] = l end
+        l[#l + 1] = a
     end
 
-    -- 上一轮的名单（用来算"这一轮变了哪几条"）
-    local prev_hidden = Placed.hidden
-    local hidden, n = {}, 0
-    local fresh_refs = {}
-
-    -- ★★ 一对一指派（2026-09-29 玩家实测: "除了放置的那块，还会把边上某块
-    --    也一起取消投影"）。
-    --   老写法是"每条记录各自找最近的实物"⇒ **一个实物可以认领多条记录**
-    --   （只要它们都在 near_cm 内）⇒ 放一块地板会把旁边那条记录也藏掉。
-    --   ⇒ 现在改成: 先把所有 (记录, 实物, 距离) 配对按距离排序，
-    --     然后**贪心认领 —— 一个实物只能认领一条记录**（最近的先认）。
-    --     这样"放一块 = 藏一条"，跟玩家的直觉一致。
-    local pairs_all = {}
-    for i = 1, n_rec do
-        local b = bp.buildings[i]
-        if type(b) == "table" then
-            local list = by_type[Util.norm_id(b.t)]
-            if list ~= nil then
-                local wx, wy, wz = record_world(place, b)
-                if wx ~= nil then
-                    for j = 1, #list do
-                        local a = list[j]
-                        local dx, dy, dz = a.x - wx, a.y - wy, a.z - wz
-                        local d2 = dx * dx + dy * dy + dz * dz
-                        if d2 <= near2 then
-                            pairs_all[#pairs_all + 1] = { i = i, a = a, d2 = d2 }
+    --- 这一条记录的世界坐标附近，有没有真实建筑？（返回实物或 nil）
+    local function find_real(wx, wy, wz)
+        local cx = math.floor(wx / 100.0)
+        local cy = math.floor(wy / 100.0)
+        local cz = math.floor(wz / 100.0)
+        for ox = -span, span do
+            for oy = -span, span do
+                for oz = -span, span do
+                    local l = grid[string.format("%d:%d:%d",
+                        cx + ox, cy + oy, cz + oz)]
+                    if l ~= nil then
+                        for j = 1, #l do
+                            local a = l[j]
+                            local dx, dy, dz = a.x - wx, a.y - wy, a.z - wz
+                            if dx * dx + dy * dy + dz * dz <= near2 then
+                                return a
+                            end
                         end
                     end
                 end
             end
         end
+        return nil
     end
-    table.sort(pairs_all, function(p, q) return p.d2 < q.d2 end)
-    local claimed = {}
-    local shown = {}
-    for k = 1, #pairs_all do
-        local pr = pairs_all[k]
-        if hidden[pr.i] ~= true and claimed[pr.a] ~= true then
-            claimed[pr.a] = true
-            hidden[pr.i] = true
-            n = n + 1
-            -- ★ 记下这个实物 actor: 每 2.5 秒用它判断"拆了没有"
-            if pr.a.obj ~= nil then fresh_refs[pr.i] = pr.a.obj end
-            if #shown < 6 then
-                shown[#shown + 1] = string.format("#%d(%.0f厘米)", pr.i,
-                    math.sqrt(pr.d2))
+
+    local hidden = {}
+    local fresh_refs = {}
+    local n_kept, n_dropped = 0, 0
+    local dropped_show = {}
+    for idx in pairs(prev_hidden) do
+        local b = bp.buildings[idx]
+        local wx, wy, wz = record_world(place, b)
+        if wx == nil then
+            hidden[idx] = true              -- 算不出坐标 ⇒ 不猜，保留
+            n_kept = n_kept + 1
+        else
+            local a = find_real(wx, wy, wz)
+            if a ~= nil then
+                hidden[idx] = true          -- 实物还在 ⇒ 继续不画
+                if a.obj ~= nil then fresh_refs[idx] = a.obj end
+                n_kept = n_kept + 1
+            else
+                n_dropped = n_dropped + 1   -- 实物没了 ⇒ 恢复渲染（拆掉自动恢复）
+                if #dropped_show < 6 then
+                    dropped_show[#dropped_show + 1] = "#" .. tostring(idx)
+                end
             end
         end
     end
-    Placed.last_hidden_note = (#shown > 0)
-        and ("刚藏掉: " .. table.concat(shown, " ")) or nil
 
-    -- ★★ refs 只用**这一轮刚从活对象里扫出来的**（fresh_refs）。
-    --
-    -- 2026-09-29 崩溃教训: 原来这里还会 `Util.valid(旧 actor)` 去"续用上一轮的引用"
-    --   —— 而那些引用可能指向**已被摧毁的 actor**，对它们调引擎函数就是
-    --   原生访问违例（pcall 抓不住）。既然每次全扫都能从**活对象**里重新拿到句柄，
-    --   就完全没必要留着旧的（宁可丢句柄，也不能摸尸体）。
-    local keep_refs = {}
-    for idx, actor in pairs(fresh_refs) do keep_refs[idx] = actor end
+    local prev_n = 0
+    for _ in pairs(prev_hidden) do prev_n = prev_n + 1 end
+    if prev_n > 0 and n_kept == 0 and n_dropped > 0 and #anchors == 0 then
+        -- 一件参照都没有（多半是在别的地方/刚读档）⇒ **不判"全拆了"**，保留原名单
+        Placed.last_delta = {}
+        Placed.last_n = prev_n
+        Placed.last_src = string.format(
+            "扫到 0 件参照 ⇒ 本次不改名单（保留 %d 件）", prev_n)
+        Log.emit("  [placed] " .. Placed.last_src)
+        return prev_n, Placed.last_src
+    end
+
     Placed.hidden = hidden
-    Placed.refs = keep_refs
-    -- ★ 把"这一轮**变化**了哪几条"算出来 —— 调用方据此只重灌受影响的组
-    --   （不重灌整个投影；见 Ghost.rehide）。增/删都算变化。
+    Placed.refs = fresh_refs
+    Placed.last_hidden_note = (#dropped_show > 0)
+        and ("恢复渲染: " .. table.concat(dropped_show, " ")) or nil
+
     local delta = {}
     for i in pairs(hidden) do
         if prev_hidden[i] ~= true then delta[#delta + 1] = i end
@@ -417,11 +571,18 @@ function Placed.apply_anchors(bp, place, anchors)
         if hidden[i] ~= true then delta[#delta + 1] = i end
     end
     Placed.last_delta = delta
-    Placed.last_n = n
-    Placed.last_src = string.format("全扫: %d 件参照, 隐藏 %d/%d",
-        #anchors, n, n_rec)
-    return n, Placed.last_src
+    Placed.last_n = n_kept
+    Placed.last_pair_note = string.format(
+        "只减不增: 核对 %d 件（%d 件确认还在 / %d 件已拆⇒恢复渲染）；%d 件参照",
+        prev_n, n_kept, n_dropped, #anchors)
+    Placed.last_src = Placed.last_pair_note
+    if n_dropped > 0 or prev_n > 0 then
+        Log.emit("  [placed] " .. Placed.last_pair_note)
+    end
+    Placed.version = Placed.version + 1
+    return n_kept, Placed.last_src
 end
+
 
 --- ★ 新建筑出现时**只做记录**，不再拿它去匹配（2026-09-29 实测教训）。
 ---

@@ -518,6 +518,120 @@ def collect_calls(clean: str) -> dict:
     return calls
 
 
+# ---------------------------------------------------------------------------
+# 13. 用了【从没声明过】的名字（= 全局 nil）
+# ---------------------------------------------------------------------------
+
+#: Lua 标准库 / 常用宿主全局 —— 这些当然可以直接用
+_LUA_KEYWORDS = {
+    "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
+}
+
+_LUA_KEYWORDS = {
+    "and", "break", "do", "else", "elseif", "end", "false", "for",
+    "function", "goto", "if", "in", "local", "nil", "not", "or",
+    "repeat", "return", "then", "true", "until", "while",
+}
+
+_KNOWN_GLOBALS = {
+    "_G", "_ENV", "arg", "assert", "collectgarbage", "coroutine", "debug",
+    "dofile", "error", "getmetatable", "io", "ipairs", "load", "loadfile",
+    "loadstring", "math", "next", "os", "package", "pairs", "pcall", "print",
+    "rawequal", "rawget", "rawlen", "rawset", "require", "select",
+    "setmetatable", "string", "table", "tonumber", "tostring", "type",
+    "unpack", "utf8", "xpcall",
+    "UE4SS", "RegisterHook", "UnregisterHook", "RegisterKeyBind",
+    "RegisterConsoleCommandHandler", "ExecuteWithDelay", "ExecuteAsync",
+    "ExecuteInGameThread", "LoopAsync", "Key", "ModRef", "StaticFindObject",
+    "CreateInvalidObject", "CreateObject", "FindFirstOf", "FindAllOf",
+}
+
+
+def check_undeclared_names(src: str) -> list:
+    """★ 2026-09-29 新增（真实事故，代价很大）:
+
+    `pwpr_placed.lua` 的"按位置配对"里，循环一直在写 `hidden[pr.i] = true`，
+    但 **`hidden` 从来没被声明成 local** ⇒ 它是**全局 nil** ⇒
+    第一次索引就抛 `attempt to index a nil value (global 'hidden')` ✗
+    ⇒ 整趟扫描从 .34 起**一直是坏的**（"已放上"名单算不出来、进度存不上、
+    玩家反复报"识别不上 / 存不上"），而 [8]/[12] 只管
+    "local 声明顺序 / 同名遮蔽"，**管不到"压根没声明"** ✗。
+
+    判定（保守，宁漏报不误报）: 只看**索引用法**（`name[...]` / `name.xxx`），
+    且这个名字在本文件里**既没有任何 local 声明、也没有裸赋值**、
+    也不在 `_KNOWN_GLOBALS` 里 ⇒ 报出来。
+    （裸赋值 `name = ...` 视为"有意的全局"，跳过；本项目的模块都是
+    `local X = require(...)` ⇒ 会被正确识别为 local ✓）
+    """
+    clean = strip_comments_and_strings(src)
+    declared = set()
+    for m in re.finditer(r"\blocal\s+function\s+([A-Za-z_]\w*)", clean):
+        declared.add(m.group(1))
+    for m in re.finditer(
+            r"\blocal\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)", clean):
+        for nm in m.group(1).split(","):
+            declared.add(nm.strip())
+    for m in re.finditer(r"\bfunction\b[^(]*\(([^)]*)\)", clean):
+        for nm in m.group(1).split(","):
+            nm = nm.strip()
+            if re.fullmatch(r"[A-Za-z_]\w*", nm):
+                declared.add(nm)
+    for m in re.finditer(
+            r"\bfor\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*(?:=|\bin\b)",
+            clean):
+        for nm in m.group(1).split(","):
+            declared.add(nm.strip())
+    for m in re.finditer(r"(?<![\w.])([A-Za-z_]\w*)\s*=(?!=)", clean):
+        declared.add(m.group(1))          # 裸赋值 = 有意的全局
+
+    problems, seen = [], set()
+    for m in re.finditer(r"(?<![\w.])([A-Za-z_]\w*)\s*[\[.]", clean):
+        nm = m.group(1)
+        # 关键字不算（`return x.y` / `end.x` 这种会被正则扫到）
+        if nm in _LUA_KEYWORDS:
+            continue
+        if nm in declared or nm in _KNOWN_GLOBALS or nm in seen:
+            continue
+        seen.add(nm)
+        problems.append((nm, clean.count("\n", 0, m.start()) + 1))
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# 14. 顶层 `return` 之后还有代码（模块被提前结束）
+# ---------------------------------------------------------------------------
+
+def check_return_not_last(src: str) -> list:
+    """★ 2026-09-29 真实事故（导致整个模组加载失败、按 J 没反应）:
+
+    我用脚本把 `pwpr_placed.lua` 的 `apply_anchors` 整段替换掉时，
+    **区域边界算错**（拿"文件里最后一个 end"当函数结尾 ⇒ 其实删多了），
+    抢救时又从部署副本追加了尾部 ⇒ 文件里出现了**两个 `return Placed`** ✗
+    ⇒ 第一个 `return` 把模块**提前结束**，它后面的全部代码成了语法错误:
+      `pwpr_placed.lua:599: <eof> expected near 'function'`
+    ⇒ UE4SS 直接 `init failed (mod disabled)` ⇒ 玩家「按 J 都没反应了」。
+
+    ⚠️ 为什么"块平衡"没抓到: `return` 不改变块的嵌套深度 ⇒ 深度是平衡的 ✓，
+    但 **Lua 的 `return` 必须是它所在块的最后一句** ⇒ 后面再有代码就是语法错误。
+    这类错误只能靠"return 的位置"来判定 ⇒ 就是这条规则。
+
+    判定: 找**顶层**（第 0 列）的 `return`（不限 `return Placed`），
+    它之后如果还有非空、非注释的行 ⇒ 报出来。
+    """
+    lines = src.split("\n")
+    problems = []
+    for i, line in enumerate(lines):
+        if line.startswith("return") and (len(line) == 6
+                                          or line[6] in " \t"):
+            for j in range(i + 1, len(lines)):
+                nxt = lines[j].strip()
+                if nxt == "" or nxt.startswith("--"):
+                    continue
+                problems.append((i + 1, j + 1, nxt[:40]))
+                break
+    return problems
+
+
 def check_use_before_local(src: str) -> list:
     """Lua 的 local 只对【声明之后】的代码可见。
 
@@ -752,6 +866,39 @@ def check_file(path: str, verbose: bool = False) -> int:
         problems += len(ub)
     else:
         print("  [8] [通过] 没有 local 声明顺序问题")
+
+    # ---- 13. 用了从没声明的名字 -------------------------------------------
+    print()
+    undecl = check_undeclared_names(src)
+    if undecl:
+        print("  [严重] {} 个名字【从没声明过】就当表/字段用（运行时是全局 nil）:"
+            .format(len(undecl)))
+        for nm, ln in undecl[:8]:
+            print("      {:<24} 第 {} 行 —— 大概想写 local {} = {{}}"
+                .format(nm, ln, nm))
+        print()
+        print("      ==> 全局 nil 第一次索引就炸；这类错误词法/块平衡/未定义调用")
+        print("          全都抓不到，只有进游戏才会报 'attempt to index a nil value'。")
+        problems += len(undecl)
+    else:
+        print("  [13] [通过] 没有「没声明就当表用」的名字")
+
+    # ---- 14. 顶层 return 之后还有代码 --------------------------------------
+    print()
+    rt = check_return_not_last(src)
+    if rt:
+        print("  [严重] {} 处【顶层 return 之后还有代码】—— 模块会被提前结束:"
+            .format(len(rt)))
+        for rline, nline, frag in rt[:4]:
+            print("      {} 行的 return 之后，第 {} 行还有: {}"
+                .format(rline, nline, frag))
+        print()
+        print("      ==> Lua 的 return 必须是所在块的最后一句；后面再有代码就是语法错误，")
+        print("          UE4SS 会直接 `init failed (mod disabled)`（整个模组不加载）。")
+        print("          多半是脚本改代码时把两段拼重了 / 追加了带 return 的尾部。")
+        problems += len(rt)
+    else:
+        print("  [14] [通过] 顶层 return 都在文件末尾")
 
     # ---- 9. Lua 模式里的 %w 不匹配下划线 -----------------------------------
     print()

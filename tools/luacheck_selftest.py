@@ -32,6 +32,37 @@ import luacheck  # noqa: E402
 # ---------------------------------------------------------------------------
 
 BAD = {
+    # ★★★ 2026-09-29 真实事故: 脚本替换函数体时区域算错 + 抢救追加尾部
+    #   ⇒ 文件里出现**两个 return**（第一个把模块提前结束）
+    #   ⇒ `pwpr_placed.lua:599: <eof> expected near 'function'`
+    #   ⇒ UE4SS `init failed (mod disabled)` ⇒ 玩家「按 J 都没反应了」。
+    #   块平衡抓不到它（return 不改变嵌套深度）⇒ 必须靠 [14]。
+    "return_not_last.lua": '''
+local M = {}
+function M.a() return 1 end
+return M
+function M.b() return 2 end
+return M
+''',
+    # ★★★ 2026-09-29 真实踩到（代价很大，见 踩坑记录 §"hidden 从没声明"）:
+    #   `pwpr_placed.lua` 的"按位置配对"一直在写 `hidden[pr.i] = true`，
+    #   但 `hidden` **从来没被声明成 local** ⇒ 全局 nil ⇒ 第一次索引就抛
+    #   `attempt to index a nil value (global 'hidden')` ⇒ 整趟扫描一直是坏的
+    #   （"已放上"名单算不出来、进度存不上、玩家反复报"识别不上/存不上"）。
+    #   这类错误 [8]/[12] 都抓不到 —— 必须要 [13]。
+    "undeclared_global_table.lua": '''
+local function f(anchors)
+    local claimed = {}
+    for i = 1, #anchors do
+        if hidden[i] ~= true and claimed[anchors[i]] ~= true then
+            claimed[anchors[i]] = true
+            hidden[i] = true          -- ← hidden 从没 local 过 ⇒ 全局 nil ⇒ 崩
+        end
+    end
+    return hidden
+end
+return f
+''',
     # ★ 2026-09-29 真实踩到（踩坑记录 §42）: 内层 `local res` 遮蔽外层 `local res`
     #   ⇒ 内层算出来的结果写进了内层变量，出分支后外层仍是 nil
     #   ⇒ 整个功能静默什么都不做（日志前面几行还一切正常）。

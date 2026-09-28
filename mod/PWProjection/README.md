@@ -6,8 +6,9 @@
 - 运行在 **UE4SS**（Lua），不需要改 pak、不需要编译、不需要 UE 编辑器
 - 面向 **单人 / 自建服务器存档**
 - 参考了 Simple Building Blueprints 的**架构思路**，但**代码是独立写的**，不复用其源码
-- 当前状态：**投影部分已实机验证可用**（采集 / 投影 / 微调 / 分层 / 材质 / 骨骼网格全部验证通过）；
-  **屏幕提示是新加的，代码完成但还没在游戏里跑过**（见 1.4 与 4.6）
+- 当前状态（**2026-09-29 定稿**）：**采集 / 投影 / 微调 / 分层 / 材质 / 骨骼网格 / 屏幕提示 / 建造吸附 / 已放上的不再投影 / 位置进度记忆** —— **全部实机验证可用** ✓
+  - 想快速知道「现在这一版到底是什么行为」 ⇒ 看 **`docs\当前行为总览.md`**
+  - 参数逐条解释 ⇒ `docs\配置说明.md`；为什么这么写 ⇒ `docs\踩坑记录.md`；不能画的 ⇒ `已知限制.md`
 
 ---
 
@@ -686,6 +687,10 @@ GraphicsAPI = dx11
 | `buildsnap_enabled` | **`true`** | ★ **建造吸附总开关**（放建筑时落到投影上）。**出问题先改成 `false`**（`F8` 即时生效） |
 | `buildsnap_mode` | `"align"` | **目前只有 `align` 可用**（`blueprint` = 未完成/暂不可用，设了会告警） |
 | `buildsnap_dry_run` | `false` | 建造吸附**干跑**: 只写日志、不改任何东西（第一次实测建议先开） |
+| `ghost_resume_last` | `true` | 按蓝图记住"投影上次放在哪 + 已经建到哪"（**一张蓝图可存多处**）；重进游戏后按 K 沿用位置 + 把已建好的那批不画；`H` 移到脚下会**新开一处**（不覆盖旧记录），`U` 在多处之间切换 |
+| `ghost_resume_margin_m` | `20` | 蓝图包围盒之外额外放宽的距离（米）。判定"还在不在原地"按**蓝图范围**，不是"离锚点多远" |
+| `resume_save_interval_s` | `10` | 位置记忆的批量落盘间隔（秒）——不是每次放置都写文件 |
+| （附）删记录 | `pwpr_placements.json` 存着所有「位置 + 进度」；**先关游戏**，然后用 `tools\resume_tool.py list / drop-site / drop-progress / drop-blueprint / drop-all` |
 | `ghost_hide_enum` | `true` | 按 K/L 放投影时扫一遍，把**已经放过的件**标成不显示（实测稳定） |
 | `ghost_hide_scan` | `false` | 周期性扫描"被拆掉了"⇒ 自动恢复。**默认关**（拆完建筑后读 pending-kill 对象会崩）；拆掉后按 K 重放投影即可 |
 | `ghost_hide_placed` | `true` | **已经放上去的那一件，投影就不再画**（避免实物和蓝色投影重合时互相闪烁）；拆掉会自动恢复 |
@@ -702,6 +707,7 @@ GraphicsAPI = dx11
 | `buildsnap_aim_max_cm` | `3000` | **blueprint 模式**：准星前方多远以内参与选择 |
 | `buildsnap_aim_cone_deg` | `12` | **blueprint 模式**：偏离准星多少度以内算"指着它" |
 | `buildsnap_type_match` | `true` | **align 模式**：是否只吸同类型的记录（推荐） |
+| `buildsnap_learn_max_cm` | `30` | 「学到映射」的距离门槛（厘米）——只有贴得极近才学；学错了会被自动丢掉（自愈） |
 | `buildsnap_type_loose_cm` | `100` | **align 模式**：类型对不上时的**放宽阈值**（厘米，`0`=关）。实测：游戏 id `Wooden_foundation` vs 蓝图 `Wood_Foundation`（差一个 "en"），而最近那件只差 7~21 厘米 ⇒ 放宽 + **自动学到映射** |
 | `buildsnap_rot_tol_deg` | `35` | **align 模式**：朝向差在容差内 ⇒ 连朝向一起吸；超过 ⇒ **只吸位置、保留你的朝向** |
 | `ghost_material` | `"building"` | 投影材质：循环 4 档 `building`(蓝,默认) / `error`(红) / `dismantle`(黄) / `original`(彩色)；另可填 `highlight` / `building2` / `complete` / `beforefix` |

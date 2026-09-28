@@ -1,4 +1,6 @@
 ﻿#Requires -Version 5.1
+
+
 <#
   deploy.ps1 -- 部署 PWProjection 到 Palworld 的 UE4SS
 
@@ -27,6 +29,27 @@ param(
     [switch]$Disable,
     [string]$GameRoot = ""
 )
+
+# ---------------------------------------------------------------------------
+# ★★★ 2026-09-29 新增: 部署前先跑静态检查（不通过就别复制进游戏）
+#   起因: 我改代码时把 `pwpr_placed.lua` 拼出了两个 `return`，
+#   部署进游戏后 UE4SS 直接 `init failed (mod disabled)` ⇒ 玩家「按 J 都没反应了」。
+#   一条 `luacheck.py` 就能拦住它 ⇒ 放在这里当闸门。
+# ---------------------------------------------------------------------------
+$checker = Join-Path $PSScriptRoot '..\..\..\tools\luacheck.py'
+if (Test-Path $checker) {
+    Write-Host '--- 部署前静态检查 (luacheck) ---'
+    $srcDir = Join-Path $PSScriptRoot 'Scripts'
+    & python $checker $srcDir
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ''
+        Write-Host '!! 静态检查没通过 —— 已中止部署（游戏里的 Lua 保持原样）'
+        Write-Host '!! 修好上面的问题再跑一次 deploy.ps1'
+        exit 1
+    }
+    Write-Host '--- 检查通过，继续部署 ---'
+    Write-Host ''
+}
 
 $ErrorActionPreference = "Stop"
 

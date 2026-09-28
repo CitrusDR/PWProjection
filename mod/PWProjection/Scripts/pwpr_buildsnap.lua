@@ -271,7 +271,8 @@ BuildSnap.learned_id = {}
 ---   best = 类型命中（含学到的映射）里最近的一件
 ---   near = **任意类型**里最近的一件（用于放宽阈值 + 日志）
 --- want_keys: 归一化后的可接受类型集合（数组）；nil/空 = 不按类型过滤
-function BuildSnap.find_target(bp, place, wx, wy, wz, want_keys, type_match)
+function BuildSnap.find_target(bp, place, wx, wy, wz, want_keys, type_match,
+                                     want_id_norm)
     if type(bp) ~= "table" or type(bp.buildings) ~= "table" then return nil end
     local yaw = place.yaw or 0.0
     local rad = math.rad(yaw)
@@ -284,7 +285,17 @@ function BuildSnap.find_target(bp, place, wx, wy, wz, want_keys, type_match)
         end
     end
 
-    local best, near = nil, nil
+    -- ★★★ 2026-09-29 玩家实测抓到的"再也不吸"事故:
+    --   某次"地板"在极近处配到了一条**灶台**记录 ⇒ 学到映射
+    --   `Wooden_foundation → AncientCookingStove` ⇒ 之后每次放地板都去找灶台
+    --   （7~18 米外）⇒ 被"修正量上限"拦掉 ⇒ **第一次之后再也不吸** ✗
+    --   ⇒ 两条对策:
+    --     ① 学到的映射**要能自愈**（见调用方: 被上限拦掉时就丢掉它）；
+    --     ② 再加一层**名字相似**配对: 蓝图里是 `Wood_Foundation`、游戏里是
+    --        `Wooden_foundation`（同一个东西、拼写不同）⇒ 归一化后**公共前缀 ≥ 4**
+    --        就认 ⇒ 这种系统性差异**根本不需要"学"**，
+    --        而 `woodenfoundation` vs `ancientcookingstove` 公共前缀是 0 ⇒ 永远不会误配 ✓
+    local best, near, sim = nil, nil, nil
     local bs = bp.buildings
     for i = 1, #bs do
         local b = bs[i]
@@ -302,11 +313,42 @@ function BuildSnap.find_target(bp, place, wx, wy, wz, want_keys, type_match)
             local cand = { rec = b, idx = i, x = tx, y = ty, z = tz, dist = d,
                            yaw = Util.norm_yaw(yaw + (tonumber(b.yaw) or 0.0)) }
             if near == nil or d < near.dist then near = cand end
-            local hit = (type_match ~= true) or accept[BuildSnap.norm_id(b.t)] == true
+            local bnorm = BuildSnap.norm_id(b.t)
+            local hit = (type_match ~= true) or accept[bnorm] == true
             if hit and (best == nil or d < best.dist) then best = cand end
+            -- 名字相似（只在前两层都没命中时才会被用到）
+            --
+            -- ★★★ 2026-09-29 玩家实测抓到的**关键 bug**（他原话:
+            --   「那块唯一放下的，在我指向的位置就有两三个靠得近的，
+            --     **近的不吸附，吸附到更远的了**」）:
+            --   这里原来写的是 `and sim == nil` ⇒ **只保留循环里遇到的第一条**
+            --   相似记录，**完全不比距离** ✗✗
+            --   而 `bp.buildings` 的顺序是采集顺序（没有空间意义）⇒
+            --   第一条 `Wood_Foundation` 可能在基地另一头 ⇒ 于是"近的不吸、吸远的"，
+            --   日志里就表现为 `距离 512 / 750 / 933 / 1746 / 2372 厘米`。
+            --   ⇒ 现在和 `best` 一样: **取最近的那一条**（距离打平时再比公共前缀长度）。
+            if type(want_id_norm) == "string" and want_id_norm ~= ""
+                and bnorm ~= "" then
+                local common = 0
+                local n_min = math.min(#want_id_norm, #bnorm)
+                while common < n_min
+                    and string.byte(want_id_norm, common + 1)
+                        == string.byte(bnorm, common + 1) do
+                    common = common + 1
+                end
+                if common >= 4 then
+                    local better = (sim == nil) or (d < sim.dist - 0.001)
+                        or (math.abs(d - sim.dist) <= 0.001
+                            and common > (sim.common or 0))
+                    if better then
+                        sim = cand
+                        sim.common = common
+                    end
+                end
+            end
         end
     end
-    return { best = best, near = near }
+    return { best = best, near = near, sim = sim }
 end
 
 --- 一条记录在当前投影下的世界坐标。返回 x,y,z（无效返回 nil）
@@ -474,14 +516,14 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
     --   （默认值本身已经是"玩家实测认可"的灵敏度了，见 pwpr_config.lua）
     if cfg("buildsnap_demo") == true then
         radius = 4000.0
-        type_loose = 2000.0
+        type_loose = 300.0
         max_dist = 6000.0
         rot_tol = 180.0
         snap_z = true
         if BuildSnap.demo_logged ~= true then
             BuildSnap.demo_logged = true
             Log.emit("  [bsnap] ★ 演示模式（buildsnap_demo = true）:"
-                .. " 半径 40 米 / 最远 60 米 / 类型放宽 20 米 /"
+                .. " 半径 40 米 / 最远 60 米 / 类型放宽 3 米 /"
                 .. " 朝向与高度总是跟投影 —— 用来排查「怎么都吸不上」或做演示")
             Log.flush()
         end
@@ -572,7 +614,8 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         local learned_norm = BuildSnap.learned[id_norm]
         local keys = { id_norm }
         if learned_norm ~= nil then keys[#keys + 1] = learned_norm end
-        local found = BuildSnap.find_target(bp, place, lx, ly, lz, keys, type_match)
+        local found = BuildSnap.find_target(bp, place, lx, ly, lz, keys,
+            type_match, id_norm)
         -- ★★★ 这里**绝对不能**写 `local res = ...`！
         --   2026-09-29 第三次实测的教训: 上一条重构里我在这个分支里写了
         --   `local res = nil`，于是它**遮蔽了外层那个 res**，
@@ -582,13 +625,40 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         --   玩家那边就是"没反应"。⇒ 一律写到外层 res。
         if found ~= nil then
             res = found.best
+            -- ★★ 第二层: **名字相似**（同一个东西、拼写不同）—— 不再依赖"学到映射"
+            if res == nil and found.sim ~= nil then
+                res = found.sim
+                found.similar = true
+                Log.emit(string.format(
+                    "  [bsnap] 用「名字相似」配对: 游戏 id %s ↔ 蓝图类型 %s"
+                    .. "（公共前缀 %d 个字母，距离 %.1f 厘米）",
+                    tostring(id_str), tostring(res.rec.t),
+                    tonumber(res.common) or 0, res.dist))
+                if Log.throttled_flush ~= nil then Log.throttled_flush(1.0) end
+            end
             if res == nil and loose > 0.0 and found.near ~= nil
                 and found.near.dist <= loose then
                 -- ★ 放宽: 没有同类型记录，但最近的那一件贴得极近 ⇒ 就认它，
                 --   并把这次观察记成"学到映射"（下次就按同类型处理）。
                 res = found.near
                 found.loosen = true
-                if id_norm ~= "" then
+                -- ★★★ 2026-09-29 事故修复: **"放宽接受"和"学习映射"是两件事**。
+                --   · 放宽接受: 照旧 —— 距离 ≤ `buildsnap_type_loose_cm`（默认 150 厘米）
+                --     就认它（这样"名字完全不同但确实贴在一起"的怪情况也能吸上）；
+                --   · 学习映射: **只有贴得极近**（≤ `buildsnap_learn_max_cm`，默认 30 厘米）
+                --     才记下来 —— 实测"同一个东西名字不同"是 7~21 厘米，
+                --     而"别的种类"贴这么近基本不可能。
+                --   事故: 学习条件原来只要求"在放宽阈值内"（历史上到过 1000/2000 厘米）
+                --   ⇒ 放**地板**时把 9 米外的**箱子/灶台**学成了自己
+                --   ⇒ 之后每次都去找灶台（十几米外）⇒ 被修正量上限拦掉
+                --   ⇒ 玩家体感: **第一次之后再也不吸** ✗
+                local learn_max = tonumber(cfg("buildsnap_learn_max_cm")) or 30.0
+                if learn_max > 0.0 and res.dist > learn_max then
+                    Log.emit(string.format(
+                        "  [bsnap] 这次按「放宽」认了（%.1f 厘米 ≤ 放宽 %.1f）"
+                        .. "但**不学映射**（超过学习阈值 %.0f 厘米）",
+                        res.dist, loose, learn_max))
+                elseif id_norm ~= "" then
                     local learned = BuildSnap.norm_id(res.rec.t)
                     if learned ~= "" and BuildSnap.learned[id_norm] ~= learned then
                         BuildSnap.learned[id_norm] = learned
@@ -718,6 +788,90 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
     local zq = {}
     BuildSnap.yaw_to_quat(zq, target_yaw)
 
+    -- ---------------------------------------------------------------------
+    -- ★★★ 三道"防误配"闸（2026-09-29 一次实测事故后加的）
+    --
+    -- 事故经过: 玩家开着演示模式（半径 40 米 / 类型放宽 20 米）放**地板**，
+    --   而附近没有地板记录 ⇒ 吸附把目标选到 **9 米外的箱子**；
+    --   于是**每一块地板都被挪到那一个位置** ⇒ 那位置已被第一块占住
+    --   ⇒ 后面每一块都被游戏拒绝（玩家感受: "只能放下第一块，一直提示不让放"）。
+    -- ⇒ 教训: 吸附的本意是"**挪一点点**帮你对齐"，不是"把这块搬到别处去"。
+    --   所以下面三件事任意一条成立，就**原样放行**（宁可不吸，也绝不乱吸）。
+    -- ---------------------------------------------------------------------
+
+    local corr = res.dist or res.along or 0.0
+
+    -- 闸 ①: 修正量上限（最有效的总保险）
+    local max_jump = tonumber(cfg("buildsnap_max_jump_cm")) or 600.0
+    if max_jump > 0.0 and corr > max_jump then
+        BuildSnap.skipped = BuildSnap.skipped + 1
+        -- ★★ 自愈: 如果这条目标来自"学到映射"，说明那个映射是错的（把我们带到了
+        --   老远的别的种类）⇒ **丢掉它**，下次就回到"名字相似/精确类型"的正路上。
+        local idn = BuildSnap.norm_id(id_str)
+        if idn ~= "" and BuildSnap.learned[idn] ~= nil
+            and BuildSnap.learned[idn] == BuildSnap.norm_id(res.rec.t) then
+            Log.emit(string.format(
+                "  [bsnap] !! 丢掉被污染的映射: %s → %s（它把目标带到了 %.0f 厘米外）",
+                tostring(id_str), tostring(res.rec.t), corr))
+            BuildSnap.learned[idn] = nil
+        end
+        -- ★★ 2026-09-29: 玩家反馈"怎么又都识别不上了" —— 其实日志里一直写着
+        --   "要挪 751 厘米 ⇒ 原样放行"。**光说"放行"他看不出问题在哪**，
+        --   所以这里直接把"最近的投影件有多远"写出来，一眼就能判断:
+        --     · 几十厘米 ~ 2 米 ⇒ 正常，只是这次摆得偏了；
+        --     · 5 米以上 ⇒ **投影和你的实际建造位置对不上**（要重新定位投影，
+        --       或者用"投影对齐"把整个投影挪到已有建筑上）。
+        local near_txt = ""
+        if found ~= nil and found.near ~= nil then
+            near_txt = string.format("；最近的投影件（%s）在 %.1f 米外",
+                tostring(found.near.rec and found.near.rec.t or "?"),
+                (found.near.dist or 0.0) / 100.0)
+        end
+        Log.emit(string.format(
+            "  [bsnap] !! 这次要挪 %.1f 米（超过上限 %.1f 米）⇒ **原样放行**%s。"
+            .. " 吸附只做「挪一点点帮你对齐」，不做远程搬运；"
+            .. "如果最近的投影件本来就在好几米外，说明**投影本身没摆对位置**"
+            .. "（按 H 站到正确的位置重放，或用投影对齐把整个投影挪到已有建筑上）",
+            corr / 100.0, max_jump / 100.0, near_txt))
+        Log.flush()
+        return
+    end
+
+    -- 闸 ②: 那一条记录**已经放上过了**（投影里已经把它藏起来/正在待处理队列里）
+    --   ⇒ 玩家这次大概率是想在别处放，别把他按回同一个位置（那位置已经被占了）。
+    if BuildSnap.deps.record_taken ~= nil then
+        local taken = false
+        pcall(function() taken = BuildSnap.deps.record_taken(res.idx) == true end)
+        if taken then
+            BuildSnap.skipped = BuildSnap.skipped + 1
+            Log.emit(string.format(
+                "  [bsnap] !! 记录 #%s（%s）**已经放上过了** ⇒ 原样放行"
+                .. "（不再往那个已经占住的位置上吸）",
+                tostring(res.idx), tostring(res.rec.t)))
+            Log.flush()
+            return
+        end
+    end
+
+    -- 闸 ③: 这一条**刚被游戏拒绝过**（1.2 秒确认失败）⇒ 短时间内不要再试它，
+    --   否则会出现"每一次点击都撞同一堵墙"的死循环。
+    if res.idx ~= nil and BuildSnap.rejected ~= nil then
+        local t0 = BuildSnap.rejected[res.idx]
+        if t0 ~= nil then
+            local age = os.clock() - t0
+            if age < (BuildSnap.REJECT_MEMORY_S or 8.0) then
+                BuildSnap.skipped = BuildSnap.skipped + 1
+                Log.emit(string.format(
+                    "  [bsnap] !! 记录 #%s（%s）%.1f 秒前刚被游戏拒绝过 ⇒ 暂时不吸它"
+                    .. "（%.0f 秒后才会再考虑）→ 原样放行",
+                    tostring(res.idx), tostring(res.rec.t), age,
+                    BuildSnap.REJECT_MEMORY_S or 8.0))
+                Log.flush()
+                return
+            end
+        end
+    end
+
     -- ---- ★★ **已经够准就不插手**（2026-09-29 加的，为削掉"放置瞬间那一下"）
     --
     -- 为什么: 我们改写的代价是"拦下原请求 + 自己重发一次" ⇒ 游戏侧等于做**两遍活**
@@ -727,7 +881,6 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
     --   副作用: 差几厘米时朝向/高度也不再跟着投影微调 —— 这几厘米本来就在
     --   游戏的网格容差内，值得换来"点下去不卡"。想恢复旧行为就设成 0。
     local min_cm = tonumber(cfg("buildsnap_min_cm")) or 5.0
-    local corr = res.dist or res.along or 0.0
     if corr <= min_cm then
         BuildSnap.already_ok = (BuildSnap.already_ok or 0) + 1
         -- ★★★ 2026-09-29 实测踩到的坑: 这个"提前 return"最初把**记账也一起跳过了**
@@ -971,6 +1124,11 @@ function BuildSnap.schedule_confirm(target_desc, delay_ms, extra_note, rec_idx)
                 if BuildSnap.deps.notify ~= nil then
                     BuildSnap.deps.notify("吸附后的位置游戏不认可（这次没放上）",
                         "build placed position rejected by game")
+                end
+                -- ★ 记住"这一条刚被游戏拒绝过"（闸 ③ 用: 短时间内不再吸它）
+                if pc.rec_idx ~= nil then
+                    if BuildSnap.rejected == nil then BuildSnap.rejected = {} end
+                    BuildSnap.rejected[pc.rec_idx] = os.clock()
                 end
                 -- ★ 投影侧: 刚才是"先按预测藏起来"的 —— 游戏没建出来就得**撤销**
                 if BuildSnap.deps.on_placed_failed ~= nil then

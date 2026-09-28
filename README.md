@@ -1,4 +1,6 @@
-# PWProjection —— Palworld 蓝图投影模组
+# PWProjection
+
+> ★ **想知道「现在这一版到底是什么行为」⇒ `docs\当前行为总览.md`**（进度 / 按键 / 处理逻辑 / 取舍 / 排查顺序） —— Palworld 蓝图投影模组
 
 把你在游戏里盖好的基地**采集**成蓝图，之后在**任何存档**里把蓝图**投影**出来（半透明的蓝色轮廓），
 照着它一块一块盖回去；**放下建筑的那一刻会自动吸附到投影对应的位置上**，
@@ -18,10 +20,11 @@
 | **采集基地** | 站进基地按 `Y`（范围由 `capture_radius_m` 决定，`0` = 采集全部） |
 | **蓝图文件** | 存在 `Mods\NativeMods\UE4SS\Mods\PWProjection\blueprints\*.json`，纯文本、可备份/分享 |
 | **加载 / 切换蓝图** | 按 `J`（多张蓝图时循环切换） |
-| **放出投影 / 收起** | 按 `K` |
+| **放出投影 / 收起** | 按 `K`（**会沿用上次的位置**，见下） |
 | **建造吸附**（★ 核心） | **不用按键**：加载蓝图 + 放出投影 → 进建造模式正常摆 → 放下时自动落到投影位置上 |
 | **已放上的不再渲染** | 自动：放下去的那一件立刻从投影里消失（避免和实物重合闪烁） |
-| 投影微调 / 归零 | 方向键平移、`H` 把偏移归零；旋转等键见 `F7` 里的表 |
+| 投影微调 / 归零 | 方向键平移；**`H` = 重新定位到脚下**（也用来「新开一处位置」）；`U` = **换一处记录**；旋转等键见 `F7` 里的表 |
+| **位置 + 进度记忆** | 自动：按蓝图记住**上次投影放在哪**（锚点/朝向/微调）**和已经建到哪**（哪些件已放上）；重进游戏 / 换蓝图回来时按 `K` 会沿用位置，且**已建好的那部分直接不画**（判定按"上次那片蓝图范围 + 20 米"，站在基地任何一角都算）。**一张蓝图可以存多处记录**（A/B 两个位置各自独立）：`U` 在多处之间切换；`H` 把投影移到脚下时是**新开一处**（旧的那处和进度都留着） |
 | 换层显示 | 按 `L` |
 | 状态与帮助 | 按 `F7`（会把当前配置、按键表、运行状态写进日志） |
 | 即时重载配置 | 按 `F8` |
@@ -75,7 +78,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\mod\PWProjection\deploy.ps
 * **`blueprint` 模式未完成 / 暂不可用**（配置里设了会告警）⇒ 请用默认的 `align`；
 * **拆掉的建筑不会自动恢复投影** —— 那条自动扫描会读到引擎里"已销毁但还没清掉"的对象，
   实测**崩过游戏**，所以默认关闭 ⇒ 拆完按 `K` 收起再放一次即可；
-* **联机（多人）未验证**。
+* **联机（多人）未验证**；\n* **投影位置记忆**只按"蓝图文件 + 距离"判断（没有存档 id）⇒ 两个存档里**同一张蓝图、且在 50 米内的同一个坐标**理论上会互相沿用；想避免就把 `ghost_resume_last` 关掉或按 `H`。
 
 ## 常见问题
 
@@ -86,6 +89,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\mod\PWProjection\deploy.ps
 | 建筑放下时没吸上 | 看日志里的 `[bsnap]` 那几行：太远 / 类型没对上 / 被门槛放过 / 游戏拒绝了，都会写明原因 |
 | 投影和实物交替闪 | 放好的那一件本应立刻消失；若还在闪，按 `F7` 看"已放上的不渲染"状态，必要时调 `ghost_hide_placed_cm` |
 | 想确认版本 | 看日志第一行 `构建标记:` —— 和你要的版本不一致就是部署没生效 |
+| **放建筑时没吸上去** | 看日志里的 `[bsnap]` 那一行：它会写「**要挪 X 米（超过上限 0.2 米）⇒ 原样放行；最近的投影件在 Y 米外**」。<br>· Y 只有几十厘米 ~ 2 米 ⇒ 正常，只是这次摆得偏了点；<br>· **Y 有好几米 ⇒ 不是吸附坏了，是「投影本身没摆对位置」**：站到正确的位置按 `H` 重放投影，或者用「投影对齐」（在配置里给 `snap_key` 指定一个空闲字母并重启游戏）—— 在**已有建筑旁边**按它，整个投影会自动挪/转到与真实建筑重合 |
+| **怎么删掉「记住的位置/进度」** | **先关掉游戏**，然后: 全删 = 删掉 `Mods\NativeMods\UE4SS\Mods\PWProjection\Scripts\pwpr_placements.json`；只删某一张蓝图 / 某一处 = 用 `python tools\resume_tool.py --file "<上面那个文件的路径>" list` 看清单，再 `drop-site` / `drop-progress` / `drop-blueprint` |
 
 ---
 
@@ -94,7 +99,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\mod\PWProjection\deploy.ps
 ```powershell
 # 静态检查（改完 Lua 必须全绿）
 python tools\luacheck.py mod\PWProjection\Scripts     # 18 个文件 0 问题
-python tools\luacheck_selftest.py                     # 25/25
+python tools\luacheck_selftest.py                     # 27/27
 python tools\selftest.py                              # 39/39
 python tools\check_config_doc.py                      # 每个配置键都要有文档
 python tools\check_meshmap.py mod\PWProjection\Scripts

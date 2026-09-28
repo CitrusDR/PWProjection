@@ -124,8 +124,28 @@ function Snap.gather(cx, cy, cz, radius_cm)
     local list = {}
     -- ★ 进度点（只进文件，每 250 个刷一次盘）: 这一趟要读几千个 actor，
     --   万一崩了，日志最后一行就能指出"读到第几个崩的"。
+    -- ★★★ 2026-09-29 玩家实测（第 3 个问题: "第 4、5 次采集不到"）:
+    --   日志实证: `[snap] 读参照 250/692` → `读参照 500/692` → **没有收尾行**，
+    --   紧接着 `[diag] !! 本次没能算出'已放上'名单`。
+    --   ⇒ 整趟扫描是**逐个 actor 读类型**的（600+ 个），
+    --     中间**任何一个 actor 抛错（比如数组里有 nil 空洞、或某个对象读不了），
+    --     整趟就中断** ✗ ⇒ 那次"已放上"名单算不出来 ⇒ 那几件也就进不了进度
+    --     ⇒ 玩家看到"换地方建了却没记录"。
+    --   ⇒ 现在: 跳过 nil，并且**每个 actor 单独 pcall** —— 坏对象只跳过、不中断，
+    --     同时把第一个错误记下来（日志里能看见）。
+    local bad_n, bad_why = 0, nil
     for i = 1, #objs do
-        local a = Snap.read_anchor(objs[i])
+        local obj = objs[i]
+        local a = nil
+        if obj ~= nil then
+            local ok_one, one = pcall(Snap.read_anchor, obj)
+            if ok_one then
+                a = one
+            else
+                bad_n = bad_n + 1
+                if bad_why == nil then bad_why = tostring(one) end
+            end
+        end
         if a ~= nil then
             if dist2(a.x, a.y, a.z, cx, cy, cz) <= r2 then
                 list[#list + 1] = a
@@ -135,6 +155,11 @@ function Snap.gather(cx, cy, cz, radius_cm)
             Log.line(string.format("  [snap] 读参照 %d/%d（命中 %d）", i, #objs, #list))
             Log.flush()
         end
+    end
+    if bad_n > 0 then
+        Log.emit(string.format(
+            "  [snap] !! 有 %d 个 actor 读不了（已跳过，不影响其余）；第一个错误: %s",
+            bad_n, tostring(bad_why)))
     end
     local info = {
         level_total = #objs,
@@ -160,23 +185,65 @@ end
 -- 2. 归档 + 配对
 -- --------------------------------------------------------------------------
 
---- 把参照按类型归档: t -> { {x,y,z,yaw}, ... }
+--- 把参照按类型归档: 归一化类型名 -> { {x,y,z,yaw}, ... }
+---
+--- ★★ 2026-09-29 实测: 这里原来用**原始类型名**当键，于是
+---   `Wooden_foundation`（游戏里的真实建筑）和 `Wood_Foundation`（蓝图里的类型）
+---   **永远配不上** —— 同一个东西、只差一个 "en"。
+---   后果: "投影对齐"对这类建筑完全无效（玩家按 U「没有任何反应」）。
+---   ⇒ 现在统一用 `Util.norm_id`，并且允许"公共前缀 ≥4 个字母"的互相认（见 type_alias）。
 local function index_anchors(list)
     local out = {}
     for i = 1, #list do
         local a = list[i]
-        local bucket = out[a.t]
+        local k = Util.norm_id(a.t)
+        if k == "" then k = tostring(a.t) end
+        local bucket = out[k]
         if bucket == nil then
             bucket = {}
-            out[a.t] = bucket
+            out[k] = bucket
         end
         bucket[#bucket + 1] = a
     end
     return out
 end
 
+--- 两个类型名"像不像同一个东西": 归一化后**公共前缀 ≥4 个字母**。
+--- `woodenfoundation` vs `woodfoundation` ⇒ 4 ✓（同一个东西、拼写不同）
+--- `woodenfoundation` vs `ancientcookingstove` ⇒ 0 ✗（绝不会误配）
+local function name_similar(a, b)
+    if type(a) ~= "string" or type(b) ~= "string" then return 0 end
+    local n = math.min(#a, #b)
+    local i = 0
+    while i < n and string.byte(a, i + 1) == string.byte(b, i + 1) do
+        i = i + 1
+    end
+    if i >= 4 then return i end
+    return 0
+end
+
+--- 给"蓝图记录的类型名"找它在**参照侧**的真实类型名（同义表）。
+--- 只在 |alias| 里找（最多几十种类型 ⇒ 很便宜），找到就用参照侧的键，
+--- 这样两边的桶名就一致了（配对/复核都靠它）。
+local function build_type_alias(rec_keys, anchor_keys)
+    local alias = {}
+    for rk in pairs(rec_keys) do
+        if anchor_keys[rk] ~= nil then
+            alias[rk] = rk                       -- 同名，直接用
+        else
+            local best, best_n = nil, 0
+            for ak in pairs(anchor_keys) do
+                local n = name_similar(rk, ak)
+                if n > best_n then best, best_n = ak, n end
+            end
+            alias[rk] = best or rk               -- 没找到就像原来一样用自己
+        end
+    end
+    return alias
+end
+
 --- 把蓝图记录按类型归档: t -> { {x,y,z,yaw}, ... }（x/y/z = 相对包围盒中心的厘米）
-local function index_records(bp)
+local function index_records(bp, alias)
     local out, total = {}, 0
     local bs = (bp ~= nil) and bp.buildings or {}
     for i = 1, #bs do
@@ -184,10 +251,13 @@ local function index_records(bp)
         if type(b) == "table" and type(b.t) == "string" then
             local rx, ry, rz = BP.rel_cm(b)
             if rx ~= nil then
-                local bucket = out[b.t]
+                local rk = Util.norm_id(b.t)
+                if rk == "" then rk = tostring(b.t) end
+                local k = (alias ~= nil and alias[rk]) or rk
+                local bucket = out[k]
                 if bucket == nil then
                     bucket = {}
-                    out[b.t] = bucket
+                    out[k] = bucket
                 end
                 bucket[#bucket + 1] = {
                     x = rx, y = ry, z = rz,
@@ -721,7 +791,21 @@ function Snap.solve(bp, place0, opts)
             "半径 %.0f 米内没有任何建筑（没法吸附）", gather_r / 100.0)
     end
     local ancs = index_anchors(anchors)
-    local recs, n_rec = index_records(bp)
+    -- ★ 先把"蓝图类型名 → 参照类型名"的同义表建出来（跨"名字写法不同"配对）
+    local rec_keys = {}
+    do
+        local bs0 = (bp ~= nil) and bp.buildings or {}
+        for i = 1, #bs0 do
+            local b = bs0[i]
+            if type(b) == "table" and type(b.t) == "string" then
+                local rk = Util.norm_id(b.t)
+                if rk == "" then rk = tostring(b.t) end
+                rec_keys[rk] = true
+            end
+        end
+    end
+    local alias = build_type_alias(rec_keys, ancs)
+    local recs, n_rec = index_records(bp, alias)
     if n_rec == 0 then return nil, "蓝图里没有可用的记录" end
     -- ★ 复核用的细网格（格边长 = 复核容差）: 建一次，后面所有候选都复用它。
     local grid = build_grid(ancs, vtol)

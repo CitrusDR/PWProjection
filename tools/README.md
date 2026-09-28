@@ -18,6 +18,10 @@
 | `snap_sim.py` | **投影对齐算法验证**（合成基地 8 个场景）—— 本机没有 Lua 解释器，所以它是 `pwpr_snap.lua` 的 Python 复刻，并且会**反向读 Lua 源码**校验常量与关键结构（改了 Lua 不同步就报错）。第一版算法就是被它抓出"格状对称会把投票骗走"的（见 `docs\踩坑记录.md` §35） |
 | `buildsnap_sim.py` | **建造吸附纯逻辑验证** —— `pwpr_buildsnap.lua` 的复刻（id 归一化 / 四元数↔yaw / **两种选目标方式（按距离、按准星角度锥）** / **类型对不上时的放宽 + 学到映射** / 阈值边界），同样反向读 Lua 源码防漂移。抓出过"id 归一化顺序错 ⇒ 类型永远匹配不上 ⇒ 功能完全不生效"（§39），并且**把玩家实测日志里的真实数据固化成回归用例**（§40: 游戏 id `Wooden_foundation` vs 蓝图 `Wood_Foundation`） |；**另含两道守卫**: `check_config_defaults`（读 `pwpr_config.lua` 校验吸附灵敏度/隐藏开关的默认值 —— 改了默认值没同步就红）与 `check_placed_api`（钉住 `Placed.hide_now` / `Ghost.rehide` 这些跨模块约定名） |
 | `make_snapshot.ps1` | **发版快照**：核对"工作区源码 == 游戏里正在跑的那份"，打包 mod+docs+tools，并生成 SHA256 清单<br>`powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\make_snapshot.ps1 -Label "2026-09-28_跨存档投影可用版"` |
+| `resume_sim.py` | **位置/进度记忆的纯逻辑镜像 + 实测场景回归** —— 把 2026-09-29 被玩家实测打回的**四轮场景**固化成断言（A 建过→H 到 B 不许产生记录/不许隐藏、同片内挪动不新增、没放过建筑永远不记录、`U` 轮换稳定），并**反向读 `pwpr_resume.lua`/`main.lua`** 确认关键结构在（防镜像漂移）。**改这个模块前先跑它** |
+| `check_resume_json.py` | **位置/进度记忆文件（`pwpr_placements.json`）的形状自查** —— 照抄 `pwpr_resume.lua` 的手写模板解一遍 JSON（含"一处蓝图多处记录"），并**反向读 Lua 源码核对字段名**（防镜像漂移） |
+| `check_ps_safety.py` | **脚本"杀软误报"自查** —— 扫所有 `.ps1/.cmd/.bat`，命中 `-WindowStyle Hidden` / `Start-Process` / base64 / `Invoke-Expression` / 下载执行 等"隐藏子进程"形状就报错（2026-09-29 被 Windows 安全中心拦过一次，见 `docs\踩坑记录.md` §66） |
+| `resume_tool.py` | **查看/删除"投影位置 + 进度记忆"** —— `list` / `drop-site` / `drop-progress` / `drop-blueprint` / `drop-all`，用 `--file` 指向 `Scripts\pwpr_placements.json`；**先关游戏**再改 |
 | `cleanup.ps1` | 从游戏里清掉旧 mod（PWRecon 等） |
 | `pw_recon.py` | 【已过时】旧的存档解析工具，只对 0.1.4 存档有效 |
 | `pw_sav_probe.py` | 【已过时】同上，零依赖结构探测 |

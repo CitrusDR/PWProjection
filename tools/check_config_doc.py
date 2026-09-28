@@ -32,6 +32,7 @@ CONFIG_FILES = [
     "pwpr_meshmap.default.json",
     "pwpr_meshmap.json",
     "pwpr_capabilities.json",
+    "pwpr_placements.json",
 ]
 
 

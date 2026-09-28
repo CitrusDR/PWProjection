@@ -904,7 +904,11 @@ function Ghost.rehide(records)
     if #order == 0 then return 0 end          -- 这些记录不在任何组里（比如缺网格）
 
     local ok_world = (Ghost.instance_mode == "world")
-    local n_comp, n_inst = 0, 0
+    local n_comp, n_inst, n_skip = 0, 0, 0
+    local mask_n = 0
+    if Ghost.skip ~= nil then
+        for _ in pairs(Ghost.skip) do mask_n = mask_n + 1 end
+    end
     for i = 1, #order do
         local comp = order[i]
         local plan = Ghost.plan[comp]
@@ -928,7 +932,9 @@ function Ghost.rehide(records)
                 local items = plan.items
                 for j = 1, #items do
                     local entry = items[j]
-                    if not (Ghost.skip ~= nil and Ghost.skip[entry.idx] == true) then
+                    if Ghost.skip ~= nil and Ghost.skip[entry.idx] == true then
+                        n_skip = n_skip + 1
+                    else
                         local tf
                         if plan.world == true then
                             tf = Util.transform_at(
@@ -974,9 +980,12 @@ function Ghost.rehide(records)
         end
     end
     if Log ~= nil then
-        Log.line(string.format(
-            "  [placed] 增量重灌: %d 个组件 / %d 个实例（只动受影响的组，不重灌整个投影）",
-            n_comp, n_inst))
+        -- ★★ 这一行是排查"提示说去掉了但还画着"的关键: **跳过 0 件**就说明
+        --    名单没生效（历史上就是 223 永远不变 ⇒ 跳过 0 ⇒ 又被加回来）。
+        Log.emit(string.format(
+            "  [placed] 增量重灌: %d 个组件 / %d 个实例 / **跳过 %d 件**"
+            .. "（名单共 %d 件）",
+            n_comp, n_inst, n_skip, mask_n))
     end
     return n_comp
 end

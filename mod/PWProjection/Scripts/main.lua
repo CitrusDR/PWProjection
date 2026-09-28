@@ -84,6 +84,7 @@ local Ghost    = require("pwpr_ghost")
 local Snap     = require("pwpr_snap")
 local BuildSnap = require("pwpr_buildsnap")
 local Placed = require("pwpr_placed")
+local Resume = require("pwpr_resume")
 local Probe    = require("pwpr_probe")
 local Hud      = require("pwpr_hud")
 local Notify   = require("pwpr_notify")
@@ -490,6 +491,8 @@ local function do_library_next()
     end
 
     Session.activate(bp, entry.file)
+    -- ★ 换蓝图后清掉"当前那一处"的指认（否则会把新蓝图的位置/进度写到上一张的记录里）
+    pcall(function() Resume.current = nil; Placed.forget() end)
     emit_lines(BP.summary_lines(bp, 8))
 
     -- 蓝图的层高可能和 config 不同，同步到会话
@@ -646,6 +649,27 @@ local start_placed_watch, refresh_projection
 
 --- 重灌投影之前调一次: 算出"哪些记录已经有实物了" ⇒ 写进 Ghost.skip
 --- 返回: 隐藏件数（失败或没开这个功能时返回 0）
+-- ★★★ 2026-09-29 玩家规格（问题 2/3 的最终定义）:
+--   「按了 H 就直接当成用户**重新加载并投影**（J+K），当一个新的来，
+--     只是通过这个方式的投影**不需要判断"沿用哪一处"**。」
+--   ⇒ 于是这一份投影是"**新的一天，什么都没建**":
+--     · 运行时"已放上"名单清空；
+--     · **连"扫描式隐藏"也先不开**（否则扫描可能凭几何巧合把别处建过的认成"这里建过"，
+--       玩家实测就是"把已有的那份记录投影搞过来了"）；
+--     · 直到你**在这里真的放下一件**（精确通道）才开始记账 ✓
+--   这个标志就是"这一份是新投影、还没在这里建过东西"。
+local progress_fresh = false
+
+--- ★★★ 2026-09-29 玩家实测（问题 3: "重新加载的也存不上了，按 H 的也存不上，偏偏有一次成功"）:
+---   原来进度写回**只靠看门狗**（每 2.5 秒一次）+ 一道"相对基线的变化"判断。
+---   而按 `K`/`H`/`U` 时都会 `snapshot_baseline()`（把当前名单当成新基线）——
+---   于是"刚结算完、还没等到看门狗"的那几件，会在下一次按 K/H 时被当成基线的一部分
+---   ⇒ **永远不会写回记录** ✗（"完全存不上"，偶尔一次是"没按任何键刚好等到看门狗"）。
+---   ⇒ 现在: **名单一变就立刻写回**（内存记账，落盘仍然由 10 秒/收起/攒够 20 次批量做，
+---     所以不会变成"每次放置都写文件"）。
+---   这个变量在 `export_list_for_store` 定义之后被赋值（那之后才有换算能力）。
+local bind_progress_now = nil
+
 local function apply_placed_mask(reason)
     local n = 0
     -- ★★★ 2026-09-29 第二次崩溃后: **枚举关卡建筑**这条路默认关闭
@@ -660,14 +684,47 @@ local function apply_placed_mask(reason)
         Ghost.skip = nil      -- 清空"已放上的"名单: 重新放投影会把所有件都画出来
         return 0
     end
-    Ghost.skip = nil
-    local ok, a = pcall(function()
+    if progress_fresh then
+        -- ★ 这一份是"新投影"（按 H / 或按 K 时没有沿用任何记录）⇒ 它是**完整的**
+        --   ⇒ 不跑扫描式隐藏，名单保持空（你在这里放下第一件之后才会开始记账）
+        Ghost.skip = Placed.hidden
+        if Ghost.skip == nil then Ghost.skip = {} end
+        Log.emit("  [placed] 这一份是新投影（按 H 放的）⇒ 不跑扫描式认领，"
+            .. "只记你亲手放下的；想认领这一片已有建筑请按 K")
+        return 0
+    end
+    -- ★★★ 2026-09-29 玩家实测（第 1 个问题: "K 关掉再打开，建过的又都画出来"）:
+    --   日志实证: `沿用记录: … 按它对齐（1 件）` 之后紧跟
+    --   `!! 本次没能算出'已放上'名单（调用出错）⇒ Ghost.skip 保持 nil`
+    --   ⇒ **进度本来载入成功了，却被这次失败的"全扫"清成了 nil** ✗✗
+    --   ⇒ 现在: 全扫失败/返回 nil 时 **保留** 名单（不清空），并把**失败原因**写出来。
+    --   清空只应该发生在"真的算出结果且结果是空"的时候。
+    local ok, a, why = pcall(function()
         return Placed.refresh(Session.bp, Session.place())
     end)
     if ok and a ~= nil then
         Ghost.skip = Placed.hidden
         n = a
+        -- ★ 全扫的结果也是"进度"（它可能让隐藏变多/变少）⇒ 立刻写回
+        if bind_progress_now ~= nil and n > 0 then
+            pcall(function() bind_progress_now("全扫后") end)
+        end
+    else
+        Ghost.skip = Placed.hidden            -- ★ 保留（不是 nil！）
+        if Ghost.skip == nil then Ghost.skip = {} end
+        local why_txt
+        if not ok then
+            why_txt = "抛异常: " .. tostring(a)          -- pcall 失败: a = 错误信息
+        else
+            why_txt = "返回 nil，原因: " .. tostring(a)   -- 正常返回但没算出来
+        end
+        if why ~= nil then why_txt = why_txt .. " / " .. tostring(why) end
+        Log.emit(string.format(
+            "  [diag] !! 本次全扫没算出结果（%s）⇒ **保留**已载入的名单 %d 件",
+            why_txt, Placed.count()))
     end
+    Log.emit(string.format("  [diag] apply_placed_mask: 名单 %d 件（skip=%s）",
+        Placed.count(), tostring(Ghost.skip ~= nil)))
     if n > 0 then
         Log.emit(string.format(
             "  [placed] %s: 有 %d 件已经放上去了 ⇒ 这些**不再画**（拆掉会自动恢复）",
@@ -691,6 +748,17 @@ local placed_batch_gen = 0
 local function flush_placed_batch(reason)
     local list = Placed.take_pending()
     if #list == 0 then return 0 end
+    -- ★★★ 2026-09-29 玩家实测（"提示说去掉了，但投影还在"，且日志里
+    --   `增量重灌: 1 个组件 / 223 个实例` 的 **223 永远不变** ⇒ 根本没排除）:
+    --   `Placed.forget()` / `Placed.load_from()` 会**换一张新表**给 `Placed.hidden`，
+    --   而 `Ghost.skip` 只在"放投影"那条路里重新指向它 ⇒ 中间只要按过 H/U/微调，
+    --   两者就可能**指向不同的表** ⇒ 重灌时用的名单是旧的 ⇒ 那几件又被加回来 ✗
+    --   ⇒ 这里在结算前先**强制对齐**（同一张表，永远同步）。
+    Ghost.skip = Placed.hidden
+    if Ghost.skip == nil then Ghost.skip = {} end
+    Log.emit(string.format(
+        "  [diag] 结算前: 名单 %d 件，本次结算 %d 件（%s）",
+        Placed.count(), #list, tostring(reason)))
     local n, why = Ghost.rehide(list)
     if n == nil then
         -- ★ 把"为什么没用增量路"写出来 —— 否则只会看到"卡一下然后重灌"，
@@ -711,8 +779,154 @@ local function flush_placed_batch(reason)
         Notify.show(string.format("投影已更新: 这期间放上的 %d 件不再画", #list),
             string.format("ghost updated: %d placed hidden", #list))
     end
+    -- ★★ 结算完**立刻写回记录**（不等看门狗 —— 否则按 K/H 时会被基线吞掉）
+    if bind_progress_now ~= nil then
+        pcall(function() bind_progress_now("结算后立刻写回") end)
+    end
     return #list
 end
+
+-- ★★★ 2026-09-29 玩家第五轮实测抓到的最后一环:
+--   「到 B 按 H……B **没放内容也记录了**」—— 日志里能看到
+--   `扫到 0 件参照 ⇒ 保留上次的 3 件` 紧接着 `新增一处记录（第 2 处，3 件进度）`。
+--   原因: 换位置那一刻，内存里的"已放上"名单**可能还残留着上一处的进度**
+--   （扫描测不到东西时会"保留上次名单"），而 `bind_progress` 只看到"名单非空"
+--   就把它绑到了新位置 ⇒ 凭空多一条记录。
+--   ⇒ 现在加一道**基线**: 每次"投影定位/挪动"之后，把当时的名单快照下来当基线；
+--     只有**相对基线发生了变化**（= 真的在这里放了/拆了东西）才允许写回记录。
+--     这样"残留名单"只会被清掉或被基线挡住，**绝不会被当成新位置的进度**。
+local progress_baseline = nil    -- [记录序号] = true
+
+local function snapshot_baseline()
+    progress_baseline = {}
+    for idx in pairs(Placed.hidden) do progress_baseline[idx] = true end
+end
+
+local function progress_changed_since_baseline()
+    if progress_baseline == nil then return false end
+    local n_now, n_base = 0, 0
+    for idx in pairs(Placed.hidden) do
+        n_now = n_now + 1
+        if progress_baseline[idx] ~= true then return true end
+    end
+    for _ in pairs(progress_baseline) do n_base = n_base + 1 end
+    if n_now ~= n_base then return true end
+    return false
+end
+
+--- ★★★ 2026-09-29 玩家实测抓到的**第三个真 bug**:
+---   「中间有几次……似乎放了建筑也没存上」+「放置后过几秒也还在，按两下 K 重新投影也还在」。
+---
+---   真因: 按 `H`/`K` 换位置时会调 `sync_progress_to_anchor` → `Placed.forget()`，
+---   而 `forget` 会**连"待处理队列"一起清空**（`Placed.pending`）。
+---   于是"刚放下、还在等那 3 秒批量窗口"的那几件被**直接丢掉**:
+---     ① 不会被隐藏 ⇒ 投影里还在画（玩家: "过几秒也还在"）；
+---     ② 不会被记进进度 ⇒ 下次 K 恢复的是"没有它们"的进度（玩家: "没存上"）。
+---   ⇒ 修法: **换位置之前先把队列结算掉**（`commit_pending_now`），
+---     而且要用**旧的锚点**把它绑到"刚才建的那一片"上 —— 再动锚点。
+--- ★ 某一处记录的"投影变换"（用来算它那批记录的世界坐标）
+--- z 用当前会话的脚底/半高近似（换算容差 200 厘米足够吸收这点差异）
+local function site_place_of(site, ref_place)
+    if site == nil then return nil end
+    local half_z = 0.0
+    if ref_place ~= nil then half_z = ref_place.z - (Session.anchor.z or 0.0) end
+    return {
+        x = site.x + (site.ox or 0.0),
+        y = site.y + (site.oy or 0.0),
+        z = (site.z or 0.0) + (site.oz or 0.0) + half_z,
+        yaw = site.yaw or 0.0,
+    }
+end
+
+--- ★ 把"当前锚点下的一份序号"换算到某一处的坐标系（或反过来）
+local function convert_list(place_a, list, place_b, bp)
+    if place_a == nil or place_b == nil or list == nil then return nil end
+    local out = nil
+    pcall(function()
+        out = Placed.convert_indices(bp or Session.bp, place_a, list, place_b, 200.0)
+    end)
+    return out
+end
+
+--- ★ 写回记录之前: 把"当前锚点下的序号"换算到**那一处自己的坐标系**
+---   （进度是按"那一处的锚点"存的；当前投影可能已经挪过位置）
+---   如果当前锚点不属于任何一处（要新建记录），就不用换算。
+local function export_list_for_store()
+    local list = Placed.export_list()
+    local cur_place = Session.place()
+    -- ★★★ 只认"就在这一处旁边"（默认 10 米）: 否则会把新位置放的件**换算进 53 米外的旧记录**
+    --   ⇒ 旧位置明明没建那几件也要隐藏 ✗（玩家实测: "回填到旧位置"）
+    local site = nil
+    pcall(function()
+        site = Resume.nearest_site_within(Session.bp_file, Session.anchor.x,
+            Session.anchor.y, Session.anchor.z)
+    end)
+    if site == nil or cur_place == nil then return list end
+    local src_place = site_place_of(site, cur_place)
+    local conv = convert_list(cur_place, list, src_place)
+    if conv == nil then return list end
+    return conv
+end
+
+--- ★★★ 立刻把当前"已放上"名单写回记录（用**当前锚点**的坐标系）
+---   —— 这是问题 3 的正解: 不再依赖"看门狗 + 基线"的时序。
+bind_progress_now = function(why)
+    if not Session.active or Session.bp_file == nil then return false end
+    local size = (Session.bp and Session.bp.meta and Session.bp.meta.size) or nil
+    local margin = (tonumber(Config.get("ghost_resume_margin_m")) or 20.0) * 100.0
+    local list = export_list_for_store()
+    local ok, n_or_err, is_new = Resume.bind_progress(Session.bp_file, list,
+        Session.anchor, Session.yaw, Session.offset, size, margin)
+    snapshot_baseline()
+    if ok then
+        Log.emit(string.format(
+            "  [resume] %s: 进度已记入（本次 %d 件%s）",
+            tostring(why), #list, is_new and "，**新开一处**" or ""))
+    else
+        Log.emit(string.format("  [resume] %s: 进度没写回（%s）",
+            tostring(why), tostring(n_or_err)))
+    end
+    return ok
+end
+
+
+--- ★ 只要"在这里真的放下一件"（精确通道），这一份就不再是"新投影"了
+local function mark_progress_started(rec_idx)
+    -- ★ 注意: 这里**不再**解除 `progress_fresh`。
+    --   玩家的规格是"按 H 就是一份新的投影" ⇒ 那一份**全程**只记"你亲手放下的"
+    --   （精确通道），不参与扫描式认领 —— 否则扫描又会把附近的旧建筑认成"这里建过"
+    --   （规则网格平移整格后几何上无法区分，这是实测踩到的坑）。
+    --   想让它去认领已有建筑时，按 `K` 即可（K 走扫描 + 排他表）。
+    Log.emit(string.format(
+        "  [placed] 在这里放下了第一件（记录 #%s）⇒ 开始记账", tostring(rec_idx)))
+end
+
+local function commit_pending_now(why)
+    if not Session.active or Session.bp_file == nil then return 0 end
+    local n_pend = 0
+    pcall(function() n_pend = Placed.pending_count() end)
+    if n_pend == 0 then return 0 end
+    Log.emit(string.format(
+        "  [placed] %s: 先把还在等批量窗口的 %d 件结算掉（否则换位置会把它们丢掉）",
+        tostring(why), n_pend))
+    pcall(function() flush_placed_batch(why .. "前结算") end)
+    -- ★ 关键: 用**此刻的锚点**（= 旧位置）把刚结算的进度绑到那一片上
+    pcall(function()
+        if bind_progress_now ~= nil then
+            bind_progress_now("换位置前结算")
+        else
+            local size = (Session.bp and Session.bp.meta
+                and Session.bp.meta.size) or nil
+            local margin = (tonumber(Config.get("ghost_resume_margin_m"))
+                or 20.0) * 100.0
+            Resume.bind_progress(Session.bp_file, export_list_for_store(),
+                Session.anchor, Session.yaw, Session.offset, size, margin)
+            snapshot_baseline()
+        end
+    end)
+    return n_pend
+end
+
 
 local function on_ghost_placing(rec_idx)
     if not Ghost.visible or rec_idx == nil then return end
@@ -782,6 +996,7 @@ end
 ---        而全扫很便宜（实测这个基地只读 677 个 actor）。
 ---   ★ 名单变了也**不重灌整个投影** —— 让 `Ghost.rehide` 只动受影响的组。
 local placed_watch_tick_count = 0
+local resume_prog_ver = -1     -- 上一次同步给"进度记忆"的 Placed.version（去重用）
 local function placed_watch_tick()
     pcall(function()
         if not Ghost.visible then return end
@@ -802,6 +1017,26 @@ local function placed_watch_tick()
             flush_placed_batch(string.format("兜底清算（队列安静了 %.1f 秒）",
                 Placed.pending_idle_s()))
         end
+
+        -- ★ 进度同步进"位置/进度记忆"（只改内存；落盘由定时器/收起/攒够时批量做）
+        --   ★★ 只在**进度真的变了**时才同步（`Placed.version`）——
+        --   否则这里每 2.5 秒都会标脏，等于白白多写盘（玩家明确要求别乱写）。
+        pcall(function()
+            if Placed.version ~= resume_prog_ver and Session.active
+                and Session.bp_file ~= nil then
+                resume_prog_ver = Placed.version
+                -- ★ 只有"相对这个锚点的基线**真的变了**"才写回 —— 残留名单写不进来
+                if progress_changed_since_baseline() then
+                    local size = (Session.bp and Session.bp.meta
+                        and Session.bp.meta.size) or nil
+                    local margin = (tonumber(Config.get("ghost_resume_margin_m"))
+                        or 20.0) * 100.0
+                    Resume.bind_progress(Session.bp_file, export_list_for_store(),
+                        Session.anchor, Session.yaw, Session.offset, size, margin)
+                    snapshot_baseline()
+                end
+            end
+        end)
 
         local changed = false
         -- ★★★ 2026-09-29 崩溃后的默认关闭: 这条"查引用还在不在"的快路径
@@ -904,6 +1139,18 @@ refresh_projection = function(reason, rebuild)
         Log.emit("[step] apply_transform 完成")
         Log.flush()
         Log.emit(string.format("投影已移动（%s）", reason))
+        -- ★ 微调之后更新"位置记忆"（只改内存；落盘交给定时器）
+        pcall(function()
+            local size = (Session.bp and Session.bp.meta and Session.bp.meta.size) or nil
+            local margin = (tonumber(Config.get("ghost_resume_margin_m")) or 20.0) * 100.0
+            Resume.remember(Session.bp_file, Session.anchor, Session.yaw,
+                Session.offset, size, margin)
+            if progress_changed_since_baseline() then
+                Resume.bind_progress(Session.bp_file, export_list_for_store(),
+                    Session.anchor, Session.yaw, Session.offset, size, margin)
+                snapshot_baseline()
+            end
+        end)
         -- ★ 屏幕提示: 微调是"按一下要看一下"的操作，屏幕上必须给反馈。
         --   （方向键/小键盘是按键重复速率触发的，节流在 Notify 里做）
         Notify.show(string.format("投影 %s   偏移 %s", reason, Session.offset_note()),
@@ -927,6 +1174,69 @@ refresh_projection = function(reason, rebuild)
         string.format("ghost refreshed (%s)", reason))
 end
 
+--- ★★★ 2026-09-29 玩家第四轮实测抓到的**关键 bug**（这次是模型层面的）:
+---   「在 A 投影并放置建筑；到 B 按 H，移动到 B，**且投影上缺少在 A 放置过的几个建筑的投影**……
+---     按 U 只有 B 位置的投影，**也是缺了放置过建筑投影的**」
+---
+---   真因: 运行时那份"已放上"名单（`Placed.hidden` / `Ghost.skip`）是**按蓝图**存的，
+---   不是**按位置**存的 ⇒ 把投影挪到 B 之后，它还在用 **A 的进度** ⇒
+---   ① B 处的投影把"在 A 建过的那几件"也藏起来（那儿根本没建）✗；
+---   ② 看门狗又把这个**非空**名单绑给了 B ⇒ B 凭空多出一条记录 ✗
+---   （日志实证: `扫到 0 件参照 ⇒ 保留上次的 3 件` 紧跟 `新增一处记录（第 2 处，3 件进度）`）
+---   ⇒ 现在: **投影每次定位/挪动，运行时名单都必须重新对齐到"锚点所在的那一片"** ——
+---     那一片有记录就加载它的进度，**没有就清空**（绝不把别处的进度带过来）。
+local function sync_progress_to_anchor(anchor, why)
+    if not Session.active or Session.bp == nil or anchor == nil then return 0 end
+    local margin = (tonumber(Config.get("ghost_resume_margin_m")) or 20.0) * 100.0
+    local site = nil
+    pcall(function()
+        -- ★★★ 2026-09-29 玩家定稿（H 修好之后）: **"沿用"用蓝图范围（宽）**。
+        --   分工:
+        --     · `K` = "对齐到这个世界" —— 站在基地**任何角落**都该认出"我在哪一处"
+        --       ⇒ 半径 = **蓝图包围盒一半 + `ghost_resume_margin_m`**（这张蓝图 ≈ 53 米）✓
+        --     · `H` = "在脚下放一份**全新**投影" —— **完全不查**范围 ✓
+        --     · **登记 / 写回进度** 仍用 `ghost_site_merge_m`（**10 米**，收紧）——
+        --       否则"换个地方建"会被并进几十米外的旧记录 ✗（"回填到旧位置"那个 bug）
+        --   这里与 K 路径的那次查找**必须一致**，否则会出现
+        --   "那边说命中、这边说不命中"的矛盾状态。
+        site = Resume.find_site(Session.bp_file, anchor.x, anchor.y, anchor.z, margin)
+    end)
+    local total = (Session.bp.buildings and #Session.bp.buildings) or nil
+    Placed.forget()
+    if site == nil then
+        Log.emit(string.format(
+            "  [resume] %s: 这一片还没有记录 ⇒ 运行时'已放上'名单清零"
+            .. "（不把别处的进度带过来）", tostring(why)))
+        Ghost.skip = Placed.hidden
+        snapshot_baseline()
+        return 0
+    end
+    local list = Resume.placed_of_site(site)
+    local n = 0
+    if list ~= nil then
+        -- ★ 关键: 那一处的序号是"在它自己的锚点下"记的 ⇒ 换算到**当前锚点**再用
+        local cur_place = Session.place()
+        local src_place = site_place_of(site, cur_place)
+        local conv = convert_list(src_place, list, cur_place)
+        if conv ~= nil then
+            if #conv ~= #list then
+                Log.emit(string.format(
+                    "  [resume] 进度换算: %d 件 → %d 件（锚点变了，按几何重新对上）",
+                    #list, #conv))
+            end
+            list = conv
+        end
+        n = Placed.load_from(list, total)
+    end
+    Log.emit(string.format(
+        "  [resume] %s: 这一片有记录 ⇒ 运行时名单按它对齐（%d 件）",
+        tostring(why), n))
+    -- ★ 名单换了新表 ⇒ 让"重灌用的那份"立刻指向同一张表（否则重灌会用旧名单）
+    Ghost.skip = Placed.hidden
+    snapshot_baseline()          -- ★ 定位完成 ⇒ 这里就是新的基线
+    return n
+end
+
 local function do_ghost_toggle()
     Log.clear()
     Log.section("投影")
@@ -938,6 +1248,9 @@ local function do_ghost_toggle()
         --   历史上这里曾用"世界标记"判断 —— 而那个标记会抖动，结果是:
         --   玩家想按 K 收起，却因为误判"换了世界"把投影**重新放了一遍**。
         Ghost.clear()
+        -- ★ 收起时立刻把"位置记忆"落一次盘（玩家可能马上退出游戏）
+        pcall(function() Resume.remember(Session.bp_file, Session.anchor,
+            Session.yaw, Session.offset); Resume.save(true) end)
         Log.emit("投影已收起，宿主对象已销毁（不会在读档时留下残留）。")
         Notify.show("投影已收起（宿主对象已销毁）", "ghost hidden", "error")
         flush_log()
@@ -969,6 +1282,65 @@ local function do_ghost_toggle()
         return
     end
 
+    -- ★★★ 先结算"待处理队列"（用旧锚点）—— 否则这次换位置会把刚放的那几件丢掉
+    pcall(function() commit_pending_now("放下投影") end)
+
+    -- ★★ 2026-09-29 玩家需求（三轮迭代后的最终形态）:
+    --   "上次没建完，重进游戏再来建 —— 投影能不能沿用上次的位置 + 进度"；
+    --   而且**一张蓝图可以有多处记录**（A 处、B 处各自独立）。
+    --   按 K 之前先问一句"这张蓝图一共有几处、我现在属于哪一处"；
+    --   命中的那一处就把 锚点/朝向/微调/进度 全恢复（投影和已建好的部分就对上了）。
+    --   · 判定按"蓝图包围盒 + 容许距离"（`ghost_resume_margin_m`）⇒ 站基地哪一角都算；
+    --   · 想改到脚下: 按 `H`（会**新开一处**记录，不会把原来那处弄丢）；
+    --   · 想换另一处: 按 `B` 循环切换。
+    local resumed = false
+    if Config.get("ghost_resume_last") == true then
+        local px, py, pz = Session.player_pos()
+        local margin = (tonumber(Config.get("ghost_resume_margin_m")) or 20.0) * 100.0
+        -- ★★★ 2026-09-29 玩家定稿: K 的"沿用"用**蓝图范围（宽）** —— 站在基地任何角落
+        --   按 K 都应认出"我在哪一处"（明细见 `sync_progress_to_anchor` 里的注释）。
+        --   "换个地方建会不会被并进旧记录"由**登记半径**（10 米）把关，不靠这里 ✗
+        local e, site_idx, why = Resume.find_site(Session.bp_file, px, py, pz, margin)
+        if e ~= nil then
+            Session.anchor.x, Session.anchor.y, Session.anchor.z = e.x, e.y, e.z
+            Session.yaw = e.yaw or 0.0
+            Session.offset.x, Session.offset.y, Session.offset.z =
+                e.ox or 0.0, e.oy or 0.0, e.oz or 0.0
+            resumed = true
+            progress_fresh = false        -- ★ 沿用了某一处 ⇒ 按那一处的进度显示
+            local n_all = #Resume.progress_sites(Session.bp_file)
+            Log.emit(string.format(
+                "  沿用上次的投影位置（%s，朝向 %.0f 度）。想改到脚下就按 H",
+                tostring(why or "在范围内"), Session.yaw))
+            if n_all > 1 then
+                Log.emit(string.format(
+                    "  ★ 这张蓝图有 %d 处放置记录，现在用的是第 %d 处；按 U 换下一处",
+                    n_all, site_idx))
+            end
+            -- ★ 进度也一起恢复: 上次已经放上的那些件不再画（按 K 之后的全扫会再核对一遍）
+            local n_prog = 0
+            pcall(function()
+                n_prog = sync_progress_to_anchor(Session.anchor, "沿用记录")
+            end)
+            if n_prog > 0 then
+                Log.emit(string.format(
+                    "  同时恢复了上次的进度: %d 件已建好的不再画"
+                    .. "（放投影后的全扫会按当前世界核对一遍）", n_prog))
+            end
+        else
+            -- ★ 这一片没有记录 ⇒ 运行时名单必须清空（**不能**把别处的进度带过来）
+            --   ⚠️ 这里**不设** `progress_fresh`: 按 `K` 时**要**跑扫描 —— 它的用途正是
+            --      "认领这一片**已经建好**的建筑"（玩家最常见的用法: 旧基地上继续建）。
+            --      串味问题由"排他表"解决（别处已认领的实物，本次扫描不许再认领）。
+            pcall(function()
+                sync_progress_to_anchor(Session.anchor, "新位置")
+            end)
+            if Resume.last_note ~= nil then
+                Log.line("  " .. tostring(Resume.last_note))
+            end
+        end
+    end
+
     local place = Session.place()
     if place == nil then
         Log.emit("!! 拿不到玩家位置，无法定位投影。")
@@ -976,7 +1348,6 @@ local function do_ghost_toggle()
         flush_log()
         return
     end
-
     local mode, idx = Session.filter()
     -- ★★ 重灌之前先算"哪些已经放上去了"（放上的就不画了，见 pwpr_placed.lua）
     local n_placed = apply_placed_mask("按 K 放投影")
@@ -1025,13 +1396,34 @@ local function do_ghost_toggle()
     end
     Log.emit("")
     Log.emit("微调: 方向键（F9 切 移动/旋转/材质）  小键盘 8/2 4/6 9/3 挪  +/- 旋转  5 复位  0 换步长")
-    Log.emit("分层: L      对齐到原建筑: U（放下时已自动吸）      重新定位到脚下: H      收起: 再按 K")
+    -- ★ 2026-09-29 更正文案: 这里原来写"放下时已自动吸"，但 `snap_on_place` 默认已关
+    --   （投影对齐会和手动微调打架，见 踩坑记录 §42）⇒ 现在写清楚"要按 U"。
+    Log.emit("分层: L      换一处记录: U（这张蓝图存了多处放置记录时用）      重新定位到脚下: H      收起: 再按 K")
 
     -- ★ 屏幕提示: 放下投影先立刻给一行（别让玩家在自动对齐那一两秒里干等），
     --   吸附完成后**再发一行**（用 show_force 忽略节流 —— 见下面的包装函数）。
-    Notify.show(string.format("投影已放置: %d 件   材质 %s",
+    -- ★ 记住这一次的位置（只改内存；落盘由定时器/收起/攒够时批量做）
+    pcall(function()
+        local size = (Session.bp and Session.bp.meta and Session.bp.meta.size) or nil
+        Resume.remember(Session.bp_file, Session.anchor, Session.yaw,
+            Session.offset, size)
+    end)
+    -- ★★ 屏幕提示里把**两个键**都讲清楚（玩家 2026-09-29 第二轮反馈:
+    --    "初次投影的时候只提示了 H 可以移动到脚下，没提示可以按 U 切换之前的记录"）:
+    --    · H = 把投影挪到脚下（那一处有进度时会记成新的一处）
+    --    · U = 在这张蓝图的多处记录之间切换（**有记录时才提示**，没有就只提 H）
+    local n_prog_sites = 0
+    pcall(function() n_prog_sites = #Resume.progress_sites(Session.bp_file) end)
+    local hint = resumed and "   （沿用上次位置；H 改到脚下" or "   （H 移到脚下"
+    if n_prog_sites >= 1 then
+        hint = hint .. string.format("；U 换一处记录，共 %d 处）", n_prog_sites)
+    else
+        hint = hint .. "）"
+    end
+    Notify.show(string.format("投影已放置: %d 件   材质 %s%s",
         Ghost.stats.instances or 0,
-        tostring(MATERIAL_CN[Ghost.material_mode] or Ghost.material_mode)),
+        tostring(MATERIAL_CN[Ghost.material_mode] or Ghost.material_mode),
+        hint),
         string.format("ghost placed: %d instances", Ghost.stats.instances or 0))
     flush_log()
 end
@@ -1069,6 +1461,16 @@ local function do_resnap()
         flush_log()
         return
     end
+    -- ★★ 2026-09-29 玩家**三轮**实测后的最终规则:
+    --   `H` = **只把投影挪到脚下**（当前这一片的位置跟着更新），
+    --   **绝不新增记录** —— 记录只由"真放过建筑"产生（见 `Resume.bind_progress`）。
+    --   历史: ① 第一版"H 覆盖唯一记录" ⇒ 玩家: 「C 的位置和进度就都没了」；
+    --         ② 第二版"H 新开一处 + 复制进度" ⇒ 玩家: 「B 没放建筑也记录了，
+    --            A 的记录没了」；
+    --         ③ **现在**: 记录 = "有进度的那几片"，光挪投影不产生任何记录 ✓
+    -- ★★★ 先结算待处理队列（**必须在 resnap 之前** —— 结算要靠此刻的锚点，
+    --   也就是"你刚才建东西的那个位置"）
+    pcall(function() commit_pending_now("按 H 挪动") end)
     local okr, rerr = Session.resnap()
     Log.clear()
     if not okr then
@@ -1078,8 +1480,107 @@ local function do_resnap()
         return
     end
     Log.emit("已重新吸附到你的当前位置，偏移与旋转清零。")
-    if Ghost.visible then refresh_projection("重新吸附") end
-    Notify.show("已重新吸附到你当前位置（偏移与旋转清零）", "re-snapped to player")
+    -- ★ 只更新"当前这一片"的位置；**不新增记录**（记录只由真进度产生）
+    pcall(function()
+        local size = (Session.bp and Session.bp.meta and Session.bp.meta.size) or nil
+        local margin = (tonumber(Config.get("ghost_resume_margin_m")) or 20.0) * 100.0
+        Resume.remember(Session.bp_file, Session.anchor, Session.yaw,
+            Session.offset, size, margin)
+    end)
+    -- ★★★ 2026-09-29 玩家明确要求（第 2 个问题）:
+    --   「按 H 移动过来的应该是**一份完整的新投影**，而不是缺了已建件的那份」。
+    --   （原来我让它"按新锚点重新对齐"，方向错了 —— 那会把原处的进度带过来。）
+    --   ⇒ H = 在这里**重新放一份投影** ⇒ 运行时"已放上"名单**清空**。
+    --     注意: **不会**动任何记录（那一片的记录仍在文件里，按 K 走回原处照样恢复）。
+    pcall(function()
+        -- ★★★ 玩家 2026-09-29 明确要求（第 2 个问题）:
+        --   「按了 H 就直接当成用户重新加载并投影（J+K），当一个新的来」。
+        --   ⇒ 和 `J`（换蓝图）之后的状态完全一致:
+        --     · 清掉"当前正在用哪一处"的指认（`Resume.current`）；
+        --     · 清空运行时"已放上"名单 ⇒ 这是一份**完整的新投影**；
+        --     · **不动任何记录**（走回原处按 K 照样能恢复那处的"缺件"投影）。
+        Resume.current = nil
+        progress_fresh = true          -- ★ 新投影（不参与"沿用哪一处"的判断）
+        Placed.forget()
+        Ghost.skip = Placed.hidden
+        if Ghost.skip == nil then Ghost.skip = {} end
+        snapshot_baseline()
+        Log.emit("  [resume] 按 H: 按「重新加载并投影」处理 ⇒ 完整的新投影"
+            .. "（'已放上'名单清空；记录不动）")
+    end)
+    -- ★★★ 2026-09-29 玩家实测抓到的**真根因**（他说"把 H 弄成重新加载+投影就行"，完全正确）:
+    --   `refresh_projection(reason, rebuild)` 有一条"省事路径" —— `rebuild ~= true` 时
+    --   它**只搬动投影的组件变换**（`Ghost.apply_transform`），**不重灌实例、也不重算
+    --   "已放上"名单** ✗ 而 H 原来调的正是这条路径 ✗✗
+    --   ⇒ A 处"已隐藏"的状态被**原样搬到 B**（投影只是平移，隐藏信息没重算）
+    --     = 玩家看到的"W1 对应的位置还是不画"；
+    --   ⇒ 再按 U 回 A，两边合并的状态又搬回去 = "W1、W2 都不显示" ✗
+    --   ⇒ 修法（就是玩家的建议）: **H 做和 K 一样的完整重灌**，只是不做"范围内有没有记录"的校验。
+    --     `rebuild = true` ⇒ 会走 `apply_placed_mask` + `Ghost.fill`；
+    --     而 H 已经把 `progress_fresh` 置上 ⇒ 名单为空 ⇒ **一份完整的新投影** ✓
+    if Ghost.visible then refresh_projection("重新吸附", true) end
+    local n_all = 0
+    pcall(function() n_all = #Resume.progress_sites(Session.bp_file) end)
+    -- 提示里说清楚: 记录不会因为"挪一下投影"而增加
+    if n_all > 0 then
+        Log.emit(string.format(
+            "  只挪了位置（记录不会因此增加）。这张蓝图现有 %d 处记录；"
+            .. "按 U 可以换一处，真要新建记录得**在这里真放下建筑**", n_all))
+        Notify.show(string.format("已移到脚下（%d 处记录；按 U 换一处）", n_all),
+            "re-snapped; position updated")
+    else
+        Log.emit("  只挪了位置（这张蓝图还没有任何记录 —— 真放下建筑才会记录）。")
+        Notify.show("已移到脚下（还没放过建筑 ⇒ 不产生记录）",
+            "re-snapped; nothing recorded yet")
+    end
+    flush_log()
+end
+
+--- ★ `B` 键: 在"这张蓝图的多处放置记录"之间循环切换（玩家 2026-09-29 要求）
+local function do_site_cycle()
+    Log.clear()
+    if not Session.active then
+        Log.emit("还没有加载蓝图。")
+        Notify.show("还没有加载蓝图（先按 J）", "no blueprint loaded", "error")
+        flush_log()
+        return
+    end
+    Log.section("换一处记录")
+    -- ★ 同样先结算（换记录 = 换位置，队列不结算就会被丢掉）
+    pcall(function() commit_pending_now("换一处记录") end)
+    local site, idx, total = nil, 0, 0
+    pcall(function() site, idx, total = Resume.cycle(Session.bp_file) end)
+    if site == nil then
+        Log.emit("这张蓝图还没有任何记录（先按 K 放一次投影）。")
+        Notify.show("这张蓝图还没有记录", "no recorded site for this blueprint", "error")
+        flush_log()
+        return
+    end
+    -- 把投影挪到那一处，并恢复它的进度
+    Session.anchor.x, Session.anchor.y, Session.anchor.z = site.x, site.y, site.z
+    Session.yaw = site.yaw or 0.0
+    Session.offset.x, Session.offset.y, Session.offset.z =
+        site.ox or 0.0, site.oy or 0.0, site.oz or 0.0
+    local n_prog = 0
+    progress_fresh = false             -- ★ 切到某一处 ⇒ 按那一处显示
+    pcall(function()
+        Placed.forget()
+        local list = Resume.placed_of_site(site)
+        local total_rec = (Session.bp and Session.bp.buildings
+            and #Session.bp.buildings) or nil
+        if list ~= nil then n_prog = Placed.load_from(list, total_rec) end
+    end)
+    Log.emit(string.format("切到第 %d/%d 处记录: 锚点 (%.0f, %.0f, %.0f) 朝向 %.0f 度，"
+        .. "进度 %d 件", idx, total, site.x, site.y, site.z, Session.yaw, n_prog))
+    if Ghost.visible then
+        -- ★ 同上: 换一处记录会把**那一处的名单**载进来 ⇒ 必须完整重灌才生效
+    --   （省事路径只搬变换 ⇒ 上一处的隐藏状态会残留 ✗）
+    refresh_projection(string.format("换到第 %d/%d 处记录", idx, total), true)
+    else
+        Log.emit("（投影当前没显示 —— 按 K 放出来就是这个位置）")
+    end
+    Notify.show(string.format("换到第 %d/%d 处记录（进度 %d 件）", idx, total, n_prog),
+        string.format("site %d/%d", idx, total))
     flush_log()
 end
 
@@ -1349,6 +1850,7 @@ local function do_help()
     -- ★ 建造吸附（钩子）: 一眼看出"钩子注册上没有、见过几次请求、吸上几件"
     emit_lines(BuildSnap.status_lines())
     Log.line("  " .. Placed.status_line())
+    Log.line("  " .. Resume.status_line())
     -- ★ 投影对齐（另一件事，按 U）: 把"上一次吸附算出了什么"留在这里
     Log.line("  投影对齐: " .. ((Snap.last ~= nil)
         and Snap.describe(Snap.last)
@@ -1607,6 +2109,34 @@ local function log_autosave_tick()
     Sched.game_thread(log_autosave_tick, 2500)
 end
 
+-- ---------------------------------------------------------------------------
+-- ★ "投影位置记忆"的落盘定时器（玩家要求:**别每次放置都写文件**）
+--   每次放置/微调只改内存（几乎零开销）；这里每 10 秒（可配）批量落一次盘，
+--   另外在"收起投影 / 按 F8 / 攒够 20 次改动"时也会立刻落一次。
+-- ---------------------------------------------------------------------------
+local function resume_tick()
+    pcall(function()
+        if Resume.tick ~= nil then Resume.tick() end
+    end)
+    Sched.game_thread(resume_tick, 5000)
+end
+pcall(function()
+    Resume.init(Util.script_dir)
+    local iv = tonumber(Config.get("resume_save_interval_s"))
+    if iv ~= nil and iv > 0 then Resume.save_interval_s = iv end
+    local n_loaded = 0
+    if Resume.load() then
+        for _ in pairs(Resume.entries) do n_loaded = n_loaded + 1 end
+    end
+    -- ★ 用 Log.emit（会进文件）而不是 Log.line（缓冲，会被第一次 Log.clear 冲掉）——
+    --   2026-09-29 就是因为这行看不见，害我多绕了好几轮才找到"读盘被永久跳过"。
+    Log.emit(string.format(
+        "投影位置记忆: %s（已记 %d 张蓝图；落盘间隔 %.0f 秒，不是每次放置都写）",
+        tostring(Resume.last_note or "已就绪"), n_loaded, Resume.save_interval_s))
+    Log.flush()
+    Sched.game_thread(resume_tick, 5000)
+end)
+
 pcall(function()
     local iv = tonumber(Config.get("log_flush_interval_s"))
     local ln = tonumber(Config.get("log_flush_lines"))
@@ -1717,6 +2247,14 @@ end
 -- ---------------------------------------------------------------------------
 
 BuildSnap.deps.get = function(k) return Config.get(k) end
+-- ★★ 2026-09-29 事故后加的"防误配"闸 ②: 告诉吸附"这条记录是不是已经放上过了"
+--   （已经放上/正在待处理队列里的，就不要再把玩家往那个位置按 —— 那儿已经被占了）
+BuildSnap.deps.record_taken = function(idx)
+    if idx == nil then return false end
+    if Placed == nil then return false end
+    if Placed.is_taken ~= nil then return Placed.is_taken(idx) == true end
+    return false
+end
 -- ★★★ 2026-09-29 实测踩到的坑: `Placed.deps` **从来没被赋值过**！
 --   `Placed.refresh_delta()` 里有 `local deps = Placed.deps; if deps == nil ... return`
 --   ⇒ **兜底全扫一次都没跑过** ⇒ 拆除之后投影永远不恢复（玩家实测: 等 30 秒没反应）。
@@ -1741,6 +2279,7 @@ BuildSnap.deps.on_new_object = function(obj)
 end
 -- ★ 吸附那边"正要往哪一条记录放" ⇒ 投影立刻精确隐藏它（不用重扫）
 BuildSnap.deps.on_placing = function(rec_idx)
+    mark_progress_started(rec_idx)
     pcall(on_ghost_placing, rec_idx)
 end
 -- ★ 落地确认成功/失败 ⇒ 记下 actor / 撤销隐藏
@@ -1793,6 +2332,14 @@ try_bind("J=library-next", "J",  {}, on_direct("library-next", do_library_next))
 try_bind("K=ghost-toggle", "K",  {}, on_game_thread("ghost-toggle", do_ghost_toggle_key))
 try_bind("L=layer-cycle",  "L",  {}, on_game_thread("layer-cycle", do_layer_cycle))
 try_bind("H=resnap",       "H",  {}, on_game_thread("resnap", do_resnap))
+-- ★ U = 在这张蓝图的多处放置记录之间切换（玩家 2026-09-29 定稿）。
+--   ★★ 为什么是 `U` 而不是 `B`: **`B` 是游戏自己的建造模式入口**（玩家指出:
+--     「B 键是游戏自用的，建筑模式入口」）—— 占游戏自己的键会互相打架，
+--     这类键一律不碰（规矩 4c）。
+--   ★ 原来 `U` 是"投影对齐到附近原建筑"—— 有了位置记忆之后它基本用不上
+--     （而且那条路要枚举关卡建筑），所以让位给这个新功能，并改成**默认不绑键**
+--     （想用的人自己在配置里设 `snap_key`，见下面那段）。
+try_bind("U=site-cycle",   "U",  {}, on_game_thread("site-cycle", do_site_cycle))
 try_bind("N=probe",        "N",  {}, on_game_thread("probe", do_probe))
 -- ★ O: 屏幕提示通道探测（S9）。
 --   ★ 必须走 on_game_thread: S9 要读引擎（FindAllOf / 反射 / 构造 FText）。
@@ -1838,20 +2385,39 @@ local function key_exists(name)
     return k ~= nil
 end
 
+-- ★★ "投影对齐到附近原建筑"（`do_snap`）—— **默认不绑任何键**（2026-09-29 玩家要求）。
+--   为什么: ① `U` 让位给了新功能"换一处记录"（同一张蓝图的多处放置记录之间切换）；
+--           ② 有了位置记忆之后，"靠对齐去猜位置"基本用不上；
+--           ③ 这条对齐要**枚举关卡建筑**去配对（`Capture.list_build_actors`）——
+--              属于"会碰引擎对象"的路，默认不占键 = 平时不会误按到它。
+--   想继续用: 在 `pwpr_config.json` 里设 `"snap_key": "G"`（或别的空闲字母），
+--   **改完要重启游戏**（键位只在启动时注册，按 F8 不重绑）。
+--   ⚠️ 不能设成 `U`（现在是换一处记录）或 `B`（**游戏自己的建造模式入口**）——
+--      这里会把这两个值当成"没设"，并在日志里说明。
 local snap_key = Config.get("snap_key")
-if type(snap_key) ~= "string" or snap_key == "" then snap_key = "U" end
-do
+if type(snap_key) ~= "string" then snap_key = "" end
+snap_key = string.upper(snap_key)
+if snap_key == "U" or snap_key == "B" then
+    Log.emit(string.format(
+        "!! snap_key 设成了 %s —— 但 %s 现在另有用途（%s）⇒ 这次**不绑对齐键**。"
+        .. "想用投影对齐请换一个空闲字母（例 G）",
+        snap_key, snap_key,
+        (snap_key == "U") and "换一处记录" or "游戏自己的建造模式入口"))
+    snap_key = ""
+end
+if snap_key ~= "" then
     local ok_snap = try_bind("snap=" .. snap_key, snap_key, {},
         on_game_thread("snap", do_snap))
     if not ok_snap then
-        try_bind("snap-fallback-G", "G", {}, on_game_thread("snap-g", do_snap))
-        Log.emit("!! 吸附键 " .. snap_key .. " 没绑上，已改用备用键 G")
+        Log.emit("!! 投影对齐键 " .. snap_key .. " 没绑上（名字写错？）")
     end
     -- 小键盘 7 当别名（有就绑，没有就悄悄跳过 —— 不写进"绑定失败"名单）
     if snap_key ~= "NUM_SEVEN" and key_exists("NUM_SEVEN") then
         try_bind("snap-alt=NUM_7", "NUM_SEVEN", {},
             on_game_thread("snap-num7", do_snap))
     end
+else
+    Log.emit("投影对齐: 默认不绑键（有位置记忆之后用不上；想用就设 snap_key，例 G）")
 end
 
 -- ---------------------------------------------------------------------------
@@ -1932,7 +2498,7 @@ end
 print(TAG .. " ------------------------------------------------")
 print(TAG .. " F7=help F8=reload-cfg  Y=capture  J=next-bp  K=ghost  U=snap")
 print(TAG .. " L=layer H=resnap N=render-probe O=notify-probe")
-print(TAG .. " snap key = U (numpad 7 alias; config snap_key)")
+print(TAG .. " U=site-cycle  B=game's own build-mode key (never bind)  snap key = unbound by default (config snap_key)")
 print(TAG .. " arrows=action F9=arrow-mode")
 print(TAG .. " ------------------------------------------------")
 

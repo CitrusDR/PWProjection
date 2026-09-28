@@ -38,7 +38,11 @@ REQUIRED_LUA_SNIPPETS = [
     "function BuildSnap.read_name_string(p)",
     "function BuildSnap.block_request(id_param)",
     "function BuildSnap.record_world(place, b, c, s)",
-    "function BuildSnap.find_target(bp, place, wx, wy, wz, want_keys, type_match)",
+    "function BuildSnap.find_target(bp, place, wx, wy, wz, want_keys, type_match,",
+    "                                     want_id_norm)",
+    "buildsnap_learn_max_cm",
+    "用「名字相似」配对",
+    "丢掉被污染的映射",
     "BuildSnap.learned = {}",
     "BuildSnap.learned_id = {}",
     "local game_id = BuildSnap.learned_id[BuildSnap.norm_id(res.rec.t)]",
@@ -133,13 +137,28 @@ def record_world(place, b, c=None, s=None):
             place["z"] + rz)
 
 
-def find_target(bp, place, wx, wy, wz, want_keys, type_match=True):
-    """对应 BuildSnap.find_target（align 模式）—— 返回 {"best":…, "near":…}。
-    best = 类型命中里最近的一件；near = 任意类型里最近的一件。"""
+def common_prefix(a, b):
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def find_target(bp, place, wx, wy, wz, want_keys, type_match=True,
+                want_id_norm=None):
+    """对应 BuildSnap.find_target（align 模式）—— 返回 {"best","near","sim"}。
+
+    best = 类型命中里最近的一件；near = 任意类型里最近的一件；
+    sim  = **名字相似**的那一件（归一化后公共前缀 ≥4 个字母）—— 2026-09-29 新增，
+           用来处理"同一个东西、拼写不同"（Wood_Foundation vs Wooden_foundation），
+           这样这种系统性差异**不需要靠"学到映射"**（那个曾把功能搞死）。
+    """
     rad = math.radians(place.get("yaw", 0.0))
     c, s = math.cos(rad), math.sin(rad)
     accept = set(k for k in (want_keys or []) if k)
-    best = near = None
+    best = near = sim = None
     for b in bp["buildings"]:
         tx, ty, tz = record_world(place, b, c, s)
         d = math.sqrt((tx - wx) ** 2 + (ty - wy) ** 2 + (tz - wz) ** 2)
@@ -147,16 +166,28 @@ def find_target(bp, place, wx, wy, wz, want_keys, type_match=True):
                 "yaw": norm_yaw(place.get("yaw", 0.0) + b["yaw"])}
         if near is None or d < near["dist"]:
             near = cand
-        hit = (type_match is not True) or (norm_id(b["t"]) in accept)
+        bnorm = norm_id(b["t"])
+        hit = (type_match is not True) or (bnorm in accept)
         if hit and (best is None or d < best["dist"]):
             best = cand
-    return {"best": best, "near": near}
+        # ★★★ 2026-09-29: 这里原来用 `sim is None`（只留循环里第一条）——
+        #   而 buildings 的顺序是采集顺序 ⇒ 会"近的不吸、吸远的"（玩家实测）。
+        #   现在和 best 一样取**最近**的那一条。
+        if want_id_norm and bnorm:
+            cp = common_prefix(want_id_norm, bnorm)
+            if cp >= 4:
+                better = (sim is None) or (d < sim["dist"] - 0.001) or \
+                    (abs(d - sim["dist"]) <= 0.001 and cp > sim.get("common", 0))
+                if better:
+                    sim = dict(cand)
+                    sim["common"] = cp
+    return {"best": best, "near": near, "sim": sim}
 
 
 def solve_align(bp, place, lx, ly, lz, want_yaw, game_id, learned=None,
-                type_match=True, loose_cm=1000.0, radius_cm=2000.0,
-                rot_tol=180.0):
-    """复刻 on_request_build 里 align 模式的判定（含"学到映射"与朝向策略）。
+                type_match=True, loose_cm=150.0, radius_cm=2000.0,
+                rot_tol=180.0, learn_max_cm=30.0, max_jump_cm=600.0):
+    """复刻 on_request_build 里 align 模式的判定（含"学到映射"/"名字相似"/自愈）。
 
     返回 (动作, 详情) —— 动作 ∈ {"snap", "skip"}；详情含目标与朝向。
     """
@@ -165,23 +196,39 @@ def solve_align(bp, place, lx, ly, lz, want_yaw, game_id, learned=None,
     keys = [id_norm]
     if id_norm in learned:
         keys.append(learned[id_norm])
-    found = find_target(bp, place, lx, ly, lz, keys, type_match)
+    found = find_target(bp, place, lx, ly, lz, keys, type_match, id_norm)
     res = found["best"]
     loosened = False
+    similar = False
+    # 第二层: 名字相似（不需要学）
+    if res is None and found["sim"] is not None:
+        res = found["sim"]
+        similar = True
     if res is None and loose_cm > 0 and found["near"] is not None \
             and found["near"]["dist"] <= loose_cm:
+        # 第三层: 放宽接受（照旧 ≤ type_loose）；**只有贴得极近才学习**
         res = found["near"]
         loosened = True
-        if id_norm:
+        near_dist = found["near"]["dist"]
+        if id_norm and near_dist <= learn_max_cm:
             learned[id_norm] = norm_id(res["rec"]["t"])
     if res is None:
         return "skip", {"reason": "no-type-match", "near": found["near"]}
     if res["dist"] > radius_cm:
         return "skip", {"reason": "too-far", "dist": res["dist"]}
+    # 修正量上限（2026-09-29 事故后加的"总保险"）+ **映射自愈**
+    if max_jump_cm > 0.0 and res["dist"] > max_jump_cm:
+        healed = False
+        if id_norm and learned.get(id_norm) == norm_id(res["rec"]["t"]):
+            del learned[id_norm]          # 这个映射把我们带到了老远的地方 ⇒ 丢掉它
+            healed = True
+        return "skip", {"reason": "jump-cap", "dist": res["dist"],
+                        "healed": healed, "rec": res["rec"]}
     dyaw = abs(norm_yaw(res["yaw"] - want_yaw))
     snap_yaw = dyaw <= rot_tol
     return "snap", {"rec": res["rec"], "x": res["x"], "y": res["y"],
                     "z": res["z"], "dist": res["dist"], "loosened": loosened,
+                    "similar": similar, "learned": bool(learned),
                     "snap_yaw": snap_yaw,
                     "yaw": res["yaw"] if snap_yaw else want_yaw}
 
@@ -416,7 +463,9 @@ REQUIRED_CONFIG_DEFAULTS = [
     "buildsnap_snap_z     = true",
     "buildsnap_rot_tol_deg = 180",
     "buildsnap_max_dist_cm = 3000",
-    "buildsnap_type_loose_cm = 1000",
+    "buildsnap_type_loose_cm = 150",
+    "buildsnap_learn_max_cm = 30",
+    "buildsnap_max_jump_cm = 600",
     "buildsnap_demo       = false",
     "ghost_hide_placed  = true",
     "ghost_hide_placed_cm = 40",
@@ -424,6 +473,7 @@ REQUIRED_CONFIG_DEFAULTS = [
     "buildsnap_min_cm     = 5,",
     "ghost_hide_alive_check = false",
     "ghost_hide_enum = true",
+    "ghost_resume_last = true",
     "ghost_hide_scan = false",
     "log_flush_interval_s = 5",
     "log_flush_lines      = 200",
@@ -444,6 +494,7 @@ GHOST_LUA = os.path.join(ROOT, "mod", "PWProjection", "Scripts",
 #   删掉，吸附那边会静默什么都不做。所以在这里钉住。
 REQUIRED_PLACED_SNIPPETS = [
     "function Placed.hide_now(rec_idx)",
+    "function Placed.is_taken(rec_idx)",
     "function Placed.take_pending()",
     "function Placed.cancel_pending(rec_idx)",
     "function Placed.stash_actor(rec_idx, actor)",
@@ -530,9 +581,26 @@ def test_demo_mode(verbose):
                               loose_cm=p["type_loose_cm"],
                               radius_cm=p["radius_cm"],
                               rot_tol=p["rot_tol_deg"])
-    check("演示参数下: 吸上了，且**修正量 ≥ 5 米**（肉眼绝对看得出来）",
-          act2 == "snap" and info2.get("dist", 0) >= 500.0,
-          "三维距离=%.0f 厘米（水平 800 + 垂直 300）" % info2.get("dist", -1))
+    # ★ 2026-09-29 定稿: **修正量上限对演示模式同样生效**（安全优先于"演示夸张"）。
+    #   8.5 米的修正量已经超出"吸附=挪一点点"的语义 ⇒ 演示模式下也**原样放行**。
+    check("演示参数下: 8.5 米的修正量被**修正量上限**拦下（安全优先）",
+          act2 == "skip" and info2.get("reason") == "jump-cap",
+          "三维距离=%.0f 厘米" % info2.get("dist", -1))
+
+    # 而"真的只是挪一点点"（4 米，仍在演示半径内但小于上限）时应该吸上
+    req_near = (400.0, 0.0, 0.0)
+    learned2 = {}
+    act2b, info2b = solve_align(bp, place, req_near[0], req_near[1], req_near[2],
+                                0.0, "Wooden_foundation", learned2,
+                                type_match=False,
+                                loose_cm=p["type_loose_cm"],
+                                radius_cm=p["radius_cm"],
+                                rot_tol=p["rot_tol_deg"])
+    check("演示参数下: 4 米的修正量能吸上（小于上限）",
+          act2b == "snap" and 300.0 <= info2b.get("dist", 0) <= 600.0,
+          "三维距离=%.0f 厘米" % info2b.get("dist", -1))
+    act2 = act2b
+    info2 = info2b
     act3, info3 = apply_policy(info2 if act2 == "snap" else {},
                                0.0, req[2], (800.0, 0.0, 0.0), snap_yaw=True,
                                snap_z=p["snap_z"], max_dist_cm=p["max_dist_cm"])
@@ -565,25 +633,26 @@ def test_real_id_mismatch(verbose):
     req = (18.0, 3.0, 0.0)          # 请求点（离第一块地基 18 厘米）
     want_yaw = 134.4                # 日志里的真实朝向（自由角度！）
 
-    # ① 旧行为（严格类型）: 什么都不吸 —— 这就是玩家看到的"并没有放到投影上"
+    # ① 2026-09-29 起: **名字相似层**（公共前缀 ≥4 个字母）直接命中 ——
+    #    这样"同一个东西、拼写不同"（Wood_Foundation vs Wooden_foundation）
+    #    不再依赖"学到映射"（那个缓存曾经把功能搞死，见 ⑪）。
     learned = {}
     act, info = solve_align(bp, place, req[0], req[1], req[2], 0.0,
                             "Wooden_foundation", learned, loose_cm=0.0)
-    check("严格类型匹配下: 不吸（复现玩家的现象）", act == "skip",
-          "原因=%s" % info.get("reason"))
+    check("严格类型匹配下: **名字相似**直接命中那块地基（不再需要学映射）",
+          act == "snap" and info["rec"]["t"] == "Wood_Foundation",
+          "距离=%.1f 厘米" % info.get("dist", -1))
+    check("这种情况 learned 保持为空（不需要学）", learned == {})
 
     # ② 放宽阈值（新默认 100 厘米）: 应该吸到那块地基，并**学到映射**
     learned = {}
     act2, info2 = solve_align(bp, place, req[0], req[1], req[2], want_yaw,
                               "Wooden_foundation", learned, loose_cm=100.0,
                               rot_tol=35.0)   # 显式用 35° 容差测"差太多只吸位置"
-    check("放宽阈值下: 吸到那块地基（%s，距离 %.1f）"
+    check("吸到那块地基（%s，距离 %.1f）—— 走名字相似层，不再需要「放宽」"
           % (info2.get("rec", {}).get("t", "-"), info2.get("dist", -1)),
-          act2 == "snap" and info2["rec"]["t"] == "Wood_Foundation"
-          and info2["loosened"] is True)
-    check("★ 学到了映射: woodenfoundation → %s"
-          % learned.get("woodenfoundation"),
-          learned.get("woodenfoundation") == "woodfoundation")
+          act2 == "snap" and info2["rec"]["t"] == "Wood_Foundation")
+    check("★ 名字相似命中时**不需要学映射**（learned 为空）", learned == {})
     check("位置用投影的: x=%.1f（请求点是 %.1f）" % (info2["x"], req[0]),
           abs(info2["x"] - 0.0) < 0.01)
     check("把 rot_tol 设成 35 时，朝向差 134.4° ⇒ **只吸位置、保留玩家朝向**（朝向=%.1f）"
@@ -706,6 +775,67 @@ def test_fourth_test_lessons(verbose):
           act3 == "passthrough")
 
 
+def test_hijack_guard(verbose):
+    """★ 2026-09-29 实测事故回归: 放地板时附近没有地板记录 ⇒ **绝不能**配到别的种类上。
+
+    当时的实际数据（玩家日志）:
+        请求 = 放 Wooden_foundation，位置 (-99593.1,39190.8,741.2)
+        匹配 = 记录类型 ItemChest_02，距离 918.3 厘米（演示模式: 半径 4000 / 类型放宽 2000）
+        结果 = 每块地板都被挪到同一个箱子位置 ⇒ 那里已被第一块占住 ⇒ 后续全部被游戏拒
+    """
+    print("-" * 74)
+    print("⑩ ★ 防误配: 类型放宽/修正量上限（复现「地板被吸到 9 米外箱子」那次事故）")
+
+    # 蓝图里只有一条记录: 一个箱子在 9 米外（地板一件都没有）
+    bp = {"buildings": [{"t": "ItemChest_02", "p": [9.0, 0.0, 0.0], "yaw": 0.0}]}
+    place = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0}
+    req = (0.3, 0.0, 0.0)          # 玩家想在这儿放一块地板
+
+    # ① 事故配置: 类型放宽 2000 厘米 ⇒ 会认领那个 9 米外的箱子（老行为）
+    act, info = solve_align(bp, place, req[0], req[1], req[2], 0.0,
+                            "Wooden_foundation", {}, loose_cm=2000.0,
+                            radius_cm=4000.0, rot_tol=180.0)
+    # ★ 放宽（演示模式的 2000 厘米）照旧"接受"，所以这里仍然是 snap ——
+    #   真正拦住它的是后面的**修正量上限**（总保险），见下一条。
+    # 目标确实被选成了那个箱子（复现事故的目标选择），
+    # 但**修正量上限**会把它拦掉 —— 两道信息一起断言。
+    check("演示模式参数下: 目标确实被选成了那个箱子（复现事故）",
+          info.get("rec", {}).get("t") == "ItemChest_02"
+          and info.get("dist", 0) > 800.0,
+          "距离=%.0f 厘米" % info.get("dist", -1))
+    check("但**修正量上限**把它拦掉了（原样放行，不会把地板挪到 9 米外）",
+          act == "skip" and info.get("reason") == "jump-cap")
+
+    # ② 新默认（类型放宽 150）: **不该**认领它 ⇒ 原样放行（玩家正常放下去）
+    learned = {}
+    act2, info2 = solve_align(bp, place, req[0], req[1], req[2], 0.0,
+                              "Wooden_foundation", learned, loose_cm=150.0,
+                              radius_cm=2000.0, rot_tol=180.0)
+    check("新默认（类型放宽 150 厘米）: 不吸 ⇒ 原样放行（这是修复后的行为）",
+          act2 == "skip", "原因=%s" % info2.get("reason"))
+
+    # ③ 就算把类型放宽开大，"修正量上限"也要能兜住
+    jump_cap = 600.0
+    act3, info3 = solve_align(bp, place, req[0], req[1], req[2], 0.0,
+                              "Wooden_foundation", {}, loose_cm=2000.0,
+                              radius_cm=4000.0, rot_tol=180.0)
+    corr3 = info3.get("dist", 0.0)
+    check("同样这一件: 修正量 %.0f 厘米 > 上限 %.0f ⇒ 闸门会拦下（原样放行）"
+          % (corr3, jump_cap),
+          act3 == "skip" and corr3 > jump_cap)
+    check("被拦下时若目标来自「学到映射」，会顺手丢掉那个坏映射（自愈）",
+          "healed" in info3)
+
+    # ④ 正常范围内的修正量不该被上限误伤
+    bp2 = {"buildings": [{"t": "Wood_Foundation", "p": [0.0, 0.0, 0.0], "yaw": 0.0}]}
+    act4, info4 = solve_align(bp2, place, 1.8, 0.0, 0.0, 0.0,
+                              "Wooden_foundation", {}, loose_cm=150.0,
+                              radius_cm=2000.0, rot_tol=180.0)
+    check("正常工作范围（差 1.8 米）: 会吸、且远小于上限",
+          act4 == "snap" and info4["dist"] < jump_cap,
+          "距离=%.0f 厘米" % info4.get("dist", -1))
+
+
 def test_thresholds(verbose):
     print("-" * 74)
     print("④ 阈值/朝向判定的边界（与 Lua 里的判断一致）")
@@ -717,6 +847,103 @@ def test_thresholds(verbose):
     # 朝向差要按"最短角"算（179 与 -179 只差 2 度，不是 358）
     check("179° 与 -179° 的差 = 2°（按最短角）",
           abs(norm_yaw(179.0 - (-179.0))) == 2.0)
+
+
+def test_pick_nearest_similar(verbose=True):
+    """★ 2026-09-29 玩家实测: 「我指向的位置就有两三个靠得近的，**近的不吸附，
+    吸附到更远的了**」。
+
+    根因: "名字相似"那一层原来写的是 `sim == nil`（只留循环里第一条相似记录），
+    而 `bp.buildings` 的顺序是**采集顺序**（没有空间意义）⇒ 第一条 `Wood_Foundation`
+    可能在基地另一头 ⇒ 于是吸附到 5~24 米外（日志里的 512/750/933/1746/2372 厘米）。
+    """
+    print("-" * 74)
+    print("⑫ ★ 相似记录要取**最近**的（不是数组里第一条）")
+
+    # 故意把"远的"放在最前面，模拟采集顺序
+    bp = {"buildings": [
+        {"t": "Wood_Foundation", "p": [9.0, 0.0, 0.0], "yaw": 0.0},   # 9 米
+        {"t": "Wood_Foundation", "p": [2.0, 0.0, 0.0], "yaw": 0.0},   # 2 米
+        {"t": "Wood_Foundation", "p": [0.3, 0.0, 0.0], "yaw": 0.0},   # 30 厘米 ← 应该选它
+    ]}
+    place = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0}
+    learned = {}
+    act, info = solve_align(bp, place, 0.3, 0.0, 0.0, 0.0,
+                            "Wooden_foundation", learned, loose_cm=150.0)
+    check("三条相似记录时: 选**最近**的那条（30 厘米），不是数组里第一条（9 米）",
+          act == "snap" and info.get("dist", 9999) < 50.0,
+          "距离=%.1f 厘米" % info.get("dist", -1))
+    check("结果在修正量上限内 ⇒ 真的会吸（不再被上限拦掉）",
+          info.get("dist", 9999) <= 200.0)
+
+
+def test_learn_poisoning(verbose=True):
+    """★ 2026-09-29 实测事故回归: 放地板却匹配到灶台 ⇒ 第一次之后再也不吸。
+
+    玩家原话: 「怎么只有第一次放置能吸附，后面不管对不对齐都没有吸附上去」。
+    日志实证: `匹配: 记录类型=AncientCookingStove 距离=1691.6 厘米` ⇒ 被修正量上限拦掉。
+    成因: `learned` 只在"类型放宽阈值内"就学习（历史上到过 1000/2000 厘米），
+         一次"地板配到灶台"就把映射污染了，而且**没有任何纠正机制**。
+    """
+    print("-" * 74)
+    print("⑪ ★ 学习污染: 放地板配到灶台（复现「第一次之后再也不吸」）+ 三条修法")
+
+    # 蓝图: 一块地板在脚下 20 厘米处；一个灶台在 9 米外
+    bp = {"buildings": [
+        {"t": "Wood_Foundation", "p": [0.2, 0.0, 0.0], "yaw": 0.0},
+        {"t": "AncientCookingStove", "p": [9.0, 0.0, 0.0], "yaw": 0.0},
+    ]}
+    place = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0}
+
+    # ① 正常情况: 名字相似层直接认出那块地板（不需要学）
+    learned = {}
+    act, info = solve_align(bp, place, 0.2, 0.0, 0.0, 0.0,
+                            "Wooden_foundation", learned)
+    check("名字不同也能配上（公共前缀 wood）⇒ 吸到那块地板",
+          act == "snap" and info["rec"]["t"] == "Wood_Foundation"
+          and info["dist"] < 50.0,
+          "距离=%.0f 厘米" % info.get("dist", -1))
+    check("这种情况**不许**往 learned 里写东西（不需要学）",
+          learned == {})
+
+    # ② 已经被污染的映射: 地板 → 灶台
+    learned = {"woodenfoundation": "ancientcookingstove"}
+    act2, info2 = solve_align(bp, place, 0.2, 0.0, 0.0, 0.0,
+                              "Wooden_foundation", learned)
+    check("被污染的映射会把目标带到灶台（9 米外）—— 复现事故",
+          info2.get("rec", {}).get("t") == "AncientCookingStove",
+          "距离=%.0f 厘米" % info2.get("dist", -1))
+    check("修正量上限拦下它（原样放行，不会乱吸）",
+          act2 == "skip" and info2.get("reason") == "jump-cap")
+    check("★ 自愈: 拦下的同时把那个污染映射丢掉了",
+          info2.get("healed") is True and learned == {})
+
+    # ③ 自愈之后: 下一次放置应该回到正路（吸到地板）
+    act3, info3 = solve_align(bp, place, 0.2, 0.0, 0.0, 0.0,
+                              "Wooden_foundation", learned)
+    check("自愈后下一次就正常吸到地板", act3 == "snap"
+          and info3["rec"]["t"] == "Wood_Foundation")
+
+    # ④ 学习阈值: 只有"贴得极近"才学（30 厘米）
+    bp2 = {"buildings": [
+        {"t": "SomeWeirdTypeName", "p": [1.2, 0.0, 0.0], "yaw": 0.0},   # 1.2 米
+    ]}
+    learned = {}
+    act4, info4 = solve_align(bp2, place, 1.2, 0.0, 0.0, 0.0,
+                              "Wooden_foundation", learned, loose_cm=150.0,
+                              learn_max_cm=30.0)
+    check("1.2 米远: **接受但绝不学习**（旧行为会把它学成自己 ⇒ 灾难）",
+          act4 == "snap" and learned == {})
+
+    learned = {}
+    bp3 = {"buildings": [
+        {"t": "SomeWeirdTypeName", "p": [0.18, 0.0, 0.0], "yaw": 0.0},  # 18 厘米
+    ]}
+    act5, info5 = solve_align(bp3, place, 0.18, 0.0, 0.0, 0.0,
+                              "Wooden_foundation", learned, loose_cm=150.0,
+                              learn_max_cm=30.0)
+    check("18 厘米远（实测里「同一件东西名字不同」的量级）: 认它并学习",
+          act5 == "snap" and learned.get("woodenfoundation") == "someweirdtypename",)
 
 
 def main():
@@ -734,6 +961,9 @@ def main():
     test_third_test_lessons(verbose)
     test_fourth_test_lessons(verbose)
     test_demo_mode(verbose)
+    test_hijack_guard(verbose)
+    test_learn_poisoning(verbose)
+    test_pick_nearest_similar(verbose)
     test_thresholds(verbose)
     # 默认值守卫（读 pwpr_config.lua）+ 投影侧接口守卫: 失败直接算失败
     if not check_config_defaults(verbose):
