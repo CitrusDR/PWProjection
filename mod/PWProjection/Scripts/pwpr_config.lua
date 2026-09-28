@@ -79,7 +79,7 @@ Config.migrated = nil      -- 本次读取是否做了默认值迁移
 ---            关掉它那个闪退就会回来。老文件里被 save-all 写成了 false，必须迁移。
 ---          同时把"轮询世界标记"降级成**纯诊断**（它抖动时曾把正常放置搞坏:
 ---            每次 0 件）—— 销毁动作只由这个钩子做。
-local CONFIG_VERSION = 8
+local CONFIG_VERSION = 17
 
 local DEFAULTS = {
     config_version     = CONFIG_VERSION,
@@ -113,26 +113,229 @@ local DEFAULTS = {
     ghost_layer_index  = 0,
     ghost_max_instances = 6000,   -- 超过就拒绝渲染（保护帧率）
     ghost_show_on_top  = true,    -- 用游戏自带 Highlight 材质
+    -- ★★ **已经放上去的那一件，投影就不再画**（默认 true）。
+    --
+    -- 为什么（2026-09-29 玩家反馈）: 实物和投影的蓝色网格**几乎完全重合**时，
+    --   两个面会互相争夺深度（z-fighting）⇒ 肉眼看到"彩色/蓝色交替闪"。
+    --   打开后: 放好的那一件从投影里消失；**拆掉之后会自动恢复**渲染。
+    ghost_hide_placed  = true,
+    -- 判断"这一件已经放上了"的距离（厘米）。默认 40。
+    --
+    -- 为什么是 80（2026-09-29 实测）: 吸附之后实物和投影记录基本重合
+    --   （实测 0~几厘米，有的甚至是游戏自己帮你贴上去的）⇒ 不需要太宽；
+    --   而放宽了会**把旁边那一格也藏掉**（玩家实测反馈）。
+    --   ⇒ 一对一匹配 + 40 厘米是稳妥值（**精确隐藏走的是吸附那条路，不看这个值**；
+    --     这个值只管"全扫兜底"那一层）: 藏错了（旁边那件也没了）调小到 20；
+    --     有件放上了却没被藏（还在闪）调大到 100。
+    ghost_hide_placed_cm = 40,
+    -- ★★ **放置批量窗口**（秒）—— 2026-09-29 玩家提的方案，很对:
+    --   「如果在一段时间内（如 3 秒）一直在放置，就只记录放置的建筑信息，
+    --     不触发清除投影；持续一段时间没有放置操作了，再把期间放置的建筑
+    --     都取消投影」。
+    --
+    -- 为什么这样更好:
+    --   ① **快**: 连放 20 块只做**一次**重灌（原来每块一次）；
+    --   ② **稳**: 每个"待处理"的记录只入队一次，不会因为放太快而漏掉某一块
+    --      （原来同一秒里多次放置会互相覆盖确认信息）。
+    --   代价: 连放期间那些件**暂时还会闪**（要等停下来才消失）—— 玩家认可这个取舍。
+    --   `0` = 关闭批量（放一块立刻处理，即旧行为）。
+    ghost_hide_placed_batch_s = 3,
+    -- ★★ **日志落盘策略**（2026-09-29 玩家提的"只记内存、攒够再写"）
+    --
+    -- 现状（先核对再改）: **放置那条路径上已经没有写盘/写控制台了** ——
+    --   逐行都是内存缓冲；所以这两个键**不是**为了省放置开销，而是为了
+    --   ① 不再依赖"碰巧发生的事件"（发提示/按键）来落盘；
+    --   ② 崩溃时最多只丢这几秒的日志。
+    --   纯诊断信息 —— 游戏数据完全不受影响。
+    --   想要"几乎不写盘"就把间隔调大（例如 30）、行数调大（例如 2000）。
+    log_flush_interval_s = 5,
+    log_flush_lines      = 200,
+    -- ★★ **"查引用还在不在"的快路径**（默认 **false = 关**）——
+    --   2026-09-29 崩溃后的结论: 它会对**已被摧毁的 actor** 调 `Util.valid()`，
+    --   而 UE4SS 的这类调用一旦对象真死了就是**原生访问违例**
+    --   （崩溃栈 44 帧全在 UE4SS 里，`EXCEPTION_ACCESS_VIOLATION reading 0xffff..ffff`），
+    --   而 **pcall 抓不住原生崩溃**。它本来就不可靠（日志一直报 `N 个引用 N 个存活`，
+    --   而玩家明明已经拆了）。⇒ 默认关；恢复完全交给"兜底全扫"
+    --   （重新枚举活对象，天然安全）。想再试验就设 true。
+    ghost_hide_alive_check = false,
+    -- ★★★ **"已放上的不渲染"里所有需要"枚举关卡建筑"的部分**（默认 **false = 关**）
+    --
+    -- 2026-09-29 **第二次崩溃**后的结论（很重要）:
+    --   枚举用的 `level.Actors` 数组**会保留已摧毁（pending-kill）的 actor**
+    --   —— 你把建筑拆掉之后，那个对象还在数组里，去读它（类型/位置）就是
+    --   **原生访问违例**（崩溃栈 30 帧全在 UE4SS 里）。
+    --   同一个原因还让"拆掉恢复"永远不生效: 那个死对象**仍然占着**那条记录的位置
+    --   ⇒ 名单算出来"还占着" ⇒ 永远不恢复。
+    --   ⇒ 2026-09-29 把这件事**拆成两个开关**（原来一个开关管两件事，太大块了）:
+    --     · `ghost_hide_enum`（本键，默认 **true**）= 允许"枚举关卡建筑"那条路子，
+    --       对应的是 **"放投影时扫一遍、把已经放过的件标成不显示"** ——
+    --       这个功能从 .9 起一直在用、**只在按 K/L 时跑一次**（玩家实测没崩过），
+    --       而且正是玩家要的（放过的件别再闪）。
+    --     · `ghost_hide_scan`（下一个键，默认 **false**）= **每隔几秒自动扫一遍**
+    --       去发现"哪些被拆掉了"。它是**周期性**的，而且**正好在玩家拆完建筑
+    --       之后那个时间点**去读那个还没被清掉的死对象 ⇒ 两次崩溃都在这条路上。
+    --       ⇒ 保持关闭；"拆掉恢复"改成 **按 K 收起再放一次**（名单清空、重画全部）。
+    --   **完全不需要枚举**的精确通道（"放下一件就把它从投影里去掉"）**始终有效**。
+    ghost_hide_enum = true,
+    -- ★★ **周期性扫描**（默认 **false = 关**）—— 只影响"自动发现被拆掉了"。
+    --   为什么单独关（2026-09-29 两次崩溃）: 它是**周期性**的（每几秒一次），
+    --   而玩家拆掉建筑后那个对象还在 `level.Actors` 里（pending-kill）⇒
+    --   下一轮扫描正好读到它 ⇒ **原生访问违例**（栈里 30 帧全是 UE4SS，pcall 抓不住）。
+    --   打开它才能"拆掉后自动恢复"，但**有崩游戏风险**（见 docs/踩坑记录.md §61）。
+    --   不开的话: 拆掉之后按 `K` 收起再放一次投影即可（会重画全部件）。
+    ghost_hide_scan = false,
+
+    -- ★★ **"已经够准就不插手"的阈值**（厘米，默认 5）。
+    --
+    -- 为什么（2026-09-29 玩家反馈"放置瞬间还是有点卡"）:
+    --   我们改写请求的代价是"拦下原请求 + 自己重发一次" ⇒ **游戏侧做两遍活**，
+    --   这个开销正好落在玩家点下去的那一瞬间。而实测里"摆得已经挺准"是常态
+    --   （游戏自己也有地板吸附）⇒ 差得比这个值还小时，完全不碰它最省。
+    --   副作用: 差几厘米时朝向/高度也不再微调（那点差值在游戏网格容差内）。
+    --   想要"每次都必须落到投影上"就设成 0（回到旧行为）。
+    buildsnap_min_cm     = 5,
+    -- ★★ **放置时的屏幕提示**（默认 **false = 不弹**）
+    --
+    -- 为什么默认关（2026-09-29 玩家反馈"还是卡"）:
+    --   一次放置会发**两条**提示（吸附结果 + 落地确认），而每条提示在引擎侧要做
+    --   「找控件 → 写文本 → 沿父链逐级显示」一串调用（实测日志里有 7 步），
+    --   而且原来每一步还**同步写一次日志文件**（一条提示 7 次写盘！）
+    --   —— 这些都发生在**游戏自己正在放置**的同一瞬间 ⇒ 叠起来就是体感卡顿。
+    --   ⇒ 默认不弹；想要每件都有反馈（演示/验证灵敏度）就改成 true。
+    --   注意: 批量清算那一条提示**不受这个开关影响**（一批只发一次，很便宜）。
+    buildsnap_notify     = false,
+    -- ★ **落地确认的屏幕提示**（默认 false，理由同上；它同样是一次控件操作）
+    buildsnap_notify_confirm = false,
+    -- ★ **诊断跟踪**（默认 false）: 打开后"发提示"的每一步都会记进日志
+    --   （排查"发提示时崩了"用；开着会明显变慢 —— 每条提示好几行日志）。
+    notify_trace         = false,
+    -- ★ **"拆掉恢复"的兜底全扫间隔**（秒，默认 8）—— **只在
+    --   `ghost_hide_scan = true`（允许周期性扫描）时才有意义**；默认那条路是关的。
+    --   原说明: **"拆掉恢复"的兜底全扫间隔**（秒，默认 8）。
+    --   快路径（每 2.5 秒查一次引用）通常就够；这层是"引用不可靠时"的保险，
+    --   代价是读一遍本关卡建筑列表（实测几百个 actor）。想恢复更快就调小（8），
+    --   但更容易感到周期性的小卡。★ 2026-09-29 从 15 调回 8: 快路径修好后它只是保险，
+    --   而"拆了不恢复"的体感太差，窗口别太长。
+    ghost_hide_scan_interval_s = 8,
 
     -- ---- 交互步长 ----
     nudge_step_cm      = 100,     -- 小键盘一次挪多少厘米
     rotate_step_deg    = 15,      -- 一次转多少度
     height_step_cm     = 100,
 
-    -- ---- 建筑吸附（把投影一步对齐到原建筑的实际位置）----
-    -- 做什么、怎么算、日志怎么看: 见 pwpr_snap.lua 文件头 + docs\配置说明.md
-    --   「建筑吸附」一节。原则: **只改投影偏移，不动蓝图数据**。
+    -- ---- ★ 建造吸附（玩家真正要的那个"吸附"）----
+    -- 场景: 照着投影盖房子，手里那块建筑摆过去总差一点 ⇒ **放下那一刻**
+    --   把它吸到投影里对应那一件的精确坐标上。
+    -- 实现: 挂 `PalNetworkPlayerComponent:RequestBuild_ToServer` 的钩子，
+    --   在回调里改写这个请求里的位置/朝向（写完回读校验）。
+    -- 详情 / 风险 / 排查: 见 `pwpr_buildsnap.lua` 文件头 与 docs\建造吸附.md。
     --
-    -- 总开关。默认开（这个功能是"只读+算偏移"，不创建任何引擎对象，
-    --   和投影渲染不是一回事；出问题时先关它排查）。
+    -- 总开关。**注意它动的是"游戏自己的放置请求"** ——
+    --   出任何问题先把这里改成 false（改完按 F8 即时生效，不用重启）。
+    buildsnap_enabled    = true,
+    -- ★ 模式（两种，只用改这一个键就能切换）:
+    --   "align"     = **吸附**: 你在建造菜单里选好那一块、对着投影摆过去，
+    --                 放下时如果与投影里**同类型**的某一件对得上（距离/朝向在阈值内），
+    --                 就落到那一件的精确位置与朝向。
+    --   "blueprint" = 【⚠️ **未完成 / 暂不可用**（2026-09-29 定稿）】
+    --                原意: 手里拿什么都无所谓，**准星指着投影里的哪一件就建哪一件**。
+    --                为什么没做完: 蓝图里的类型是从**类名**剥出来的，而游戏认的是
+    --                另一套 id（`Wood_Foundation` ≠ `Wooden_foundation`）⇒ 必须先
+    --                "学到"每个类型的游戏 id 才发得出去；而且材料按**投影那件**
+    --                算（指着箱子就要箱子的料）⇒ 实测体验不好。
+    --                **现在设成 "blueprint" 只会让它进入那条没做完的路**，
+    --                建议保持 "align"。相关键（`buildsnap_aim_*`）已归到第 3 组。
+    buildsnap_mode       = "align",
+    -- ★★ **演示模式**（默认关）—— 在**当前默认已经很松**的基础上**再松一档**，
+    --    用来做极限演示/排查（寻址范围 20 米、类型放宽 10 米）。
+    --
+    -- 为什么需要它（2026-09-29 玩家反馈）:
+    --   玩家说「align 能放了，但**完全看不出来是不是真的吸附上去了**；
+    --   对得齐的时候只有一点点肉眼可辨的偏移」。
+    --   原因是**两个"本来就很小"**叠在一起:
+    --     ① 游戏自己的放置本来就已经落在投影附近 **7~80 厘米**内（实测数据），
+    --        所以我们的修正本来就只有几十厘米；
+    --     ② 投影的高度可能和脚下地形差着几十厘米（实测见过 47 厘米），
+    --        于是"放下的实物"和"投影轮廓"在高度上对不齐 ⇒ 更看不出来。
+    --   ⇒ 打开后比默认**再松一档**: 半径 40 米 / 最远 60 米 / 类型放宽 20 米
+    --     （朝向和高度本来就总是跟投影了）。适合"怎么都吸不上，看看是不是
+    --     判定太严"的排查，以及给朋友演示。日常用默认值就够。
+    buildsnap_demo       = false,
+    -- ★ 干跑: 只写日志、**一个字节都不改**。
+    --   第一次实测建议先开它跑一圈（确认"钩子生效、id 能和蓝图类型对上、
+    --   距离/朝向判定合理"），再关掉真正启用。
+    buildsnap_dry_run    = false,
+    -- 吸附半径（厘米）。**只影响 align 模式**:
+    --   手里这件离投影里那一件多近以内才吸。
+    --   调大 = 更好吸上（但"落点会跳得更远"）；调小 = 要摆得更准才生效。
+    buildsnap_radius_cm  = 2000,
+    -- ★ 2026-09-29 玩家实测反馈: 「其实感觉现在这个吸附灵敏度才正常呢，
+    --    之前差个几厘米进行补正，根本达不到方便放置的效果。可以把默认的
+    --    灵敏度也调高点，如果后面超了再说。」
+    --   ⇒ 把"演示模式"那套放宽值**变成默认值**（原来 radius=300 / z 不吸 /
+    --     朝向容差 35°）。理由（实测数据）: 游戏自己就已经把实物放在投影附近
+    --     7~80 厘米内，所以原来那种"只补几厘米"的严格设置**几乎看不出效果、
+    --     也不方便**；而放宽之后"大致摆一下就能对齐"才是玩家要的手感。
+    --   超了怎么办: 觉得吸到旁边那一格了，就把 radius 调小（例如 800）。
+    -- ★ **高度（z）要不要也用投影的**。默认 **true** = 跟投影走（三者全对齐，
+    --   实物和投影轮廓重合，最直观）。
+    --
+    -- 为什么改成默认 true（2026-09-29 玩家实测）:
+    --   玩家开着演示模式（其中"高度也跟投影"）试完说"现在这个吸附灵敏度才正常" ⇒
+    --   高度也跟投影才是他要的手感（否则实物和投影在高度上错开，看着就是"没对齐"）。
+    --   注意: 如果地形起伏大、吸到投影高度会让那一块悬空/陷地而被游戏拒绝，
+    --   就把这个键改成 false（那时高度用游戏自己算的，x/y 仍然吸）。
+    buildsnap_snap_z     = true,
+    -- ★ **距离闸**（厘米）: 目标位置离玩家超过这个距离就**不吸、原样放行**。
+    -- 为什么需要（第三次实测）: 蓝图模式曾选中 11~25 米外的记录 ⇒ 请求发出去、
+    --   游戏拒绝（太远）、什么都没建出来。默认 1500（15 米，配合放宽后的半径）。
+    buildsnap_max_dist_cm = 3000,
+    -- 蓝图建造模式下**看多远**（厘米）: 准星前方这个距离内的投影记录才参与选择。
+    -- 【只影响未完成的 blueprint 模式 —— 2026-09-29 起该模式未完成/不建议使用】
+    -- 准星前方多远（厘米）内的投影记录才参与选择。归第 3 组: 只为兼容旧配置保留。
+    buildsnap_aim_max_cm = 3000,
+    -- 蓝图建造模式的**锥角**（度）: 投影记录偏离准星多少度以内才算"指着它"。
+    --   用角度而不是固定厘米 —— 固定厘米在远处会变得极难瞄准。
+    --   默认 12°: 3 米外允许偏 ±64 厘米、10 米外 ±2.1 米。
+    --   选不中远处的件就调大；总是选错旁边那件就调小。
+    -- 【只影响未完成的 blueprint 模式 —— 同上】锥角（度）。归第 3 组。
+    buildsnap_aim_cone_deg = 12,
+    -- 是否**只吸同类型的记录**（推荐 true）。**只影响 align 模式** ——
+    --   blueprint 模式的类型由投影决定，不看这里。
+    --   true  = 地基只吸到投影里的地基、墙只吸到墙（最不容易吸错）；
+    --   false = 只看距离，不看类型。
+    --   ★ 类型名和游戏 id 对不上时的**兜底**见下一个键（buildsnap_type_loose_cm）。
+    buildsnap_type_match = true,
+    -- ★ 类型对不上时的**放宽阈值**（厘米）。默认 100，设 0 = 关掉放宽。
+    --
+    -- 为什么需要它（2026-09-29 实测证据）:
+    --   游戏给的建筑 id 是 **`Wooden_foundation`**，而我们蓝图里的类型是
+    --   **`Wood_Foundation`** —— 只差一个 "en"，于是"同类型"永远匹配不上，
+    --   而**最近的那一件只有 7~21 厘米远**（同一个东西，就是名字不一样）。
+    --   ⇒ 现在: 没有同类型记录时，只要**最近的任意类型记录**比这个值还近，
+    --     就认它（并且把这次观察**记成"学到映射"**，之后同 id 直接按同类型处理）。
+    --   调大 = 更容易吸上（但"吸到旁边另一种建筑"的风险变大）；调小 = 更保守。
+    buildsnap_type_loose_cm = 1000,
+    -- 朝向容差（度）。**只影响 align 模式**（blueprint 模式的朝向直接取投影的）。
+    --   含义: 与投影里那一件的朝向差在容差内 ⇒ **连朝向一起吸**；
+    --         差得超过它 ⇒ **只吸位置、保留你当前的朝向**（不再整个不吸）。
+    --   ★ 2026-09-29 实测里请求朝向是 134.4°/53.0°/-42.7° 这种自由角度，
+    --     "差太多就整个不吸"会让功能看起来完全没反应 ⇒ 改成本语义。
+    --   ★ 2026-09-29 玩家实测后定稿: 默认 **180 = 永远跟投影走**
+    --     （"大致摆一下就能对齐"才是要的手感）。想保留自己转的朝向就调小，
+    --     例如 35 = 只在自己朝向和投影差不多时才跟投影。
+    buildsnap_rot_tol_deg = 180,
+
+    -- ---- 建筑吸附（**另一件事**: 把整个投影挪到已有建筑上）----
+    -- ★ 2026-09-29 说明: 玩家要的"建筑吸附"是上面的【建造吸附】；
+    --   这一组是把**整个投影**对齐到"原基地那些已经存在的建筑"上
+    --   （用途: 把蓝图叠在现有基地上做对比）。它是可选的辅助工具，按 U 触发。
     snap_enabled     = true,
-    -- ★ 放下投影（按 K）时**自动对齐一次**。默认开。
-    --   玩家 2026-09-29 明确要求: "我预期应该是在准备放置的时候吸附上去"
-    --   —— 所以放下那一刻就对齐，而不是再按一个键。
-    --   ★ 关掉它 = 回到"放下时在玩家脚下，想对齐再按吸附键"的老行为。
-    --   （不会在"挪投影"时自动吸: 那会和手动微调打架，而且方向键按住时
-    --     一秒触发十几次，每次都读几千个 actor —— 卡顿且无法精调。）
-    snap_on_place    = true,
+    -- ★ 默认 **false**（2026-09-29 改）: 原来默认 true，会让"按 K 放投影"时
+    --   投影自动跳到附近的原基地上 —— 而玩家的实际用法是"把投影放在空地照着盖"，
+    --   自动跳过去反而碍事。想用它就把这里改成 true。
+    --   （这个键从未随版本部署过 ⇒ 不需要 CONFIG_VERSION 迁移，已核对。）
+    snap_on_place    = false,
     -- 【最常需要调的】配对阈值（厘米）: 投影里的一件与原建筑差多远以内，
     --   才认为"这俩可能是同一件"。
     --   ★ 经验关系: 投影刚放出来时原点是"玩家脚下"，所以**你站得离基地中心
@@ -388,15 +591,41 @@ function Config.load(script_dir)
         return Config.values, Config.load_error
     end
 
-    local parsed, perr = Json.decode(text)
-    if parsed == nil then
+    -- ★★ 2026-09-29 实测教训: 玩家自定义键时**另起了一个 `{}`**（两个顶层对象），
+    --   旧代码用严格解析 ⇒ 报"末尾有多余内容" ⇒ **整份配置退回默认值**
+    --   （连 ghost_enabled 都掉回 false、投影被锁，玩家只看到"我的配置没生效"）。
+    --   ⇒ 现在: 多个顶层对象**合并**（后面的覆盖前面的），并且**大声提示写法**。
+    local values, perr = Json.decode_multi(text)
+    if values == nil then
         Config.load_error = "配置 JSON 解析失败，已用默认值: " .. tostring(perr)
         return Config.values, Config.load_error
+    end
+    local parsed = {}
+    local merged_multi = false
+    for i = 1, #values do
+        local v = values[i]
+        if type(v) == "table" then
+            for k, val in pairs(v) do parsed[k] = val end
+            if i > 1 then merged_multi = true end
+        elseif i == 1 then
+            Config.load_error = "配置的顶层不是对象（是一个 " .. type(v) .. "）"
+            return Config.values, Config.load_error
+        end
     end
 
     local n_ok, n_bad = merge_known(parsed)
     Config.loaded_ok = true
     Config.load_error = nil
+    if merged_multi then
+        -- 说得具体一点: 玩家最容易犯的就是"另起一个 {} 加键"
+        Config.multi_object_warn = string.format(
+            "配置文件里有 %d 个顶层 {} —— 键应该写在**同一个** {} 里（本次已自动合并，"
+            .. "但下次请把新键加进第一个 {} 内，或按 F8 重载后让本 mod 自己写一份）",
+            #values)
+        Config.load_error = Config.multi_object_warn
+    else
+        Config.multi_object_warn = nil
+    end
 
     -- ---- 默认值迁移 ------------------------------------------------------
     local ver = tonumber(Config.values.config_version) or 0
@@ -481,16 +710,66 @@ function Config.load(script_dir)
                 "hook_load_map_pre: %s -> true（★它是「回标题→重进世界」闪退的正解）",
                 tostring(old_hook))
         end
+        -- v8 -> v9: ★ 吸附灵敏度放宽成玩家实测认可的手感（2026-09-29）
+        --   原默认: radius 300 / 高度不跟投影 / 朝向容差 35° / 最远 12 米
+        --   新默认: radius 1000 / 高度跟投影 / 朝向总是跟投影 / 最远 15 米
+        --
+        --   ⚠️ 这段**故意不强制改值** —— `Config.save` 只写"和默认值不同"的键，
+        --      所以**没动过这些键**的玩家文件里根本没有它们，自动就是新默认值 ✓；
+        --      而文件里**有**这些键 = 玩家自己调过（例如特意把 buildsnap_snap_z
+        --      设成 false 去应付起伏地形）⇒ 那份值必须尊重。
+        --      这里只写一条**提醒日志**，让玩家知道手感变了、怎么调回去。
+        if ver < 9 then
+            local touched = {}
+            for _, k in ipairs({ "buildsnap_radius_cm", "buildsnap_snap_z",
+                                 "buildsnap_rot_tol_deg", "buildsnap_max_dist_cm" }) do
+                if Config.values[k] ~= nil then
+                    touched[#touched + 1] = string.format("%s=%s", k,
+                        tostring(Config.values[k]))
+                end
+            end
+            if #touched > 0 then
+                notes[#notes + 1] = "吸附灵敏度默认值已放宽（radius 2000 / 高度跟投影"
+                    .. " / 朝向总是跟投影 / 最远 30 米），"
+                    .. "但你文件里自己设过这些键，保持不动: "
+                    .. table.concat(touched, ", ")
+            else
+                notes[#notes + 1] = "吸附灵敏度已放宽（radius 1000 / 高度跟投影"
+                    .. " / 朝向总是跟投影 / 最远 30 米，见 docs\\配置说明.md）"
+            end
+        end
+        -- v9 -> v10: "已放上的不渲染"的判断距离 100 -> 80 厘米，并改成一对一匹配
+        --   （玩家实测: 100 厘米会把**旁边那一格**也一起藏掉）。
+        --   同样**不强制改值**: 没动过的玩家自动拿 80；自己调过的保持不动。
+        if ver < 10 then
+            if Config.values.ghost_hide_placed_cm == nil then
+                notes[#notes + 1] = "「已放上的不渲染」判断距离改用 40 厘米"
+                    .. "（并把匹配改成一对一 —— 之前会把旁边那一格也藏掉）"
+            else
+                notes[#notes + 1] = string.format(
+                    "「已放上的不渲染」判断距离: 你设的是 %s 厘米（保持不变）；"
+                    .. "新默认是 40，并把匹配改成了一对一",
+                    tostring(Config.values.ghost_hide_placed_cm))
+            end
+        end
         Config.values.config_version = CONFIG_VERSION
         Config.migrated = table.concat(notes, "; ")
         pcall(Config.save)
-        return Config.values, string.format(
+        local mnote = string.format(
             "配置: %d 项生效, %d 项忽略; 已从 v%d 迁移到 v%d%s",
             n_ok, n_bad, ver, CONFIG_VERSION,
             Config.migrated ~= "" and ("（" .. Config.migrated .. "）") or "")
+        if merged_multi then
+            mnote = mnote .. "  ⚠ " .. tostring(Config.multi_object_warn)
+        end
+        return Config.values, mnote
     end
 
-    return Config.values, string.format("配置: %d 项生效, %d 项忽略", n_ok, n_bad)
+    local note = string.format("配置: %d 项生效, %d 项忽略", n_ok, n_bad)
+    if merged_multi then
+        note = note .. "  ⚠ " .. tostring(Config.multi_object_warn)
+    end
+    return Config.values, note
 end
 
 --- 每个配置键属于哪一组 —— **决定写进配置文件时的顺序**，也决定文档里的归类。
@@ -512,10 +791,23 @@ Config.KEY_GROUP = {
     capture_radius_m = 1, capture_max = 1, layer_gap_cm = 1, origin_snap_m = 1,
     blueprint_dir = 1, blueprint_name_with_time = 1,
     ghost_enabled = 1, ghost_max_instances = 1, ghost_material = 1,
+    ghost_hide_placed = 1, ghost_hide_placed_cm = 1,
+    ghost_hide_placed_batch_s = 1,
+    ghost_hide_alive_check = 1, ghost_hide_enum = 1, ghost_hide_scan = 1,
+    log_flush_interval_s = 1, log_flush_lines = 1,
+    buildsnap_min_cm = 1, buildsnap_notify = 1, buildsnap_notify_confirm = 1,
+    notify_trace = 1, ghost_hide_scan_interval_s = 1,
     player_feet_offset_cm = 1,
     nudge_step_cm = 1, rotate_step_deg = 1,
     snap_enabled = 1, snap_on_place = 1, snap_radius_cm = 1, snap_verify_cm = 1,
     snap_min_matches = 1, snap_yaw_search = 1, snap_key = 1,
+    buildsnap_enabled = 1, buildsnap_mode = 1, buildsnap_demo = 1,
+    buildsnap_dry_run = 1,
+    buildsnap_radius_cm = 1, buildsnap_snap_z = 1, buildsnap_max_dist_cm = 1,
+
+    buildsnap_type_match = 1, buildsnap_type_loose_cm = 1, buildsnap_rot_tol_deg = 1,
+    -- ---- ③ 只服务于"未完成的 blueprint 模式"的键（2026-09-29 归到第 3 组）----
+    buildsnap_aim_max_cm = 3, buildsnap_aim_cone_deg = 3,
     hud_enabled = 1, hud_seconds = 1, notify_channel = 1, notify_min_interval = 1,
     notify_try_notice_text = 1, notify_own_widget = 1, notify_widget_class_path = 1,
     notify_widget_class_name = 1, notify_widget_text_child = 1,
@@ -527,8 +819,7 @@ Config.KEY_GROUP = {
     notify_probe_grep = 2, notify_send_telemetry = 2, notify_scan_in_send = 2,
     notify_textblock_cache_s = 2, library_scan_on_refresh = 2,
 
-    -- ---- ③ 历史 / 探索期遗留 ----
-    --   前四个是"被后来实现取代"的键（代码里已经没有任何地方读它们）:
+    -- ---- ③ 历史 / 探索期遗留 ----    --   前四个是"被后来实现取代"的键（代码里已经没有任何地方读它们）:
     ghost_layer_mode = 3,      -- 【已不生效】分层状态现在在 Session.layer_mode（按 L 切）
     ghost_layer_index = 3,     -- 【已不生效】同上
     ghost_show_on_top = 3,     -- 【已不生效】被 ghost_material（Highlight 材质）取代

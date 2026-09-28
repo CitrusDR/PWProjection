@@ -107,7 +107,10 @@ function Snap.read_anchor(obj)
     local t = Util.type_of(obj)          -- 第一个返回值 = 短类型名
     if t == nil then return nil end
     local _, yaw, _ = Util.rot_of(obj)
-    return { x = x, y = y, z = z, t = t, yaw = yaw or 0.0 }
+    -- ★ `obj` 也带出去（2026-09-29）: 投影侧要拿它当"这一件还在不在"的句柄 ——
+    --   被拆掉时那个 actor 会被销毁，靠 `Util.valid(obj)` 就能发现 ⇒ 恢复渲染。
+    --   以前只返回坐标/类型，于是"已经放上的不渲染"只能靠重新全扫才知道被拆了。
+    return { x = x, y = y, z = z, t = t, yaw = yaw or 0.0, obj = obj }
 end
 
 --- 收集以 (cx,cy,cz) 为中心、radius_cm 内的参照建筑。

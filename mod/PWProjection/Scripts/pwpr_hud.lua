@@ -1105,13 +1105,23 @@ Hud.CHANNELS = {
         send = function(text, _ascii, ctx, kind)
             local rep = {}
             local function note(s) rep[#rep + 1] = tostring(s) end
-            -- ★ 细粒度标记（排查"崩在发提示里面"用）: 每一步都落盘，
-            --   这样下一次崩溃时，日志最后一行就是**崩在哪一步**。
-            --   （只影响日志长度，不影响功能；定位完可以删）
+            -- ★★ 细粒度标记（当初排查"崩在发提示里面"用）。
+            --
+            -- ⚠️ 2026-09-29 性能修复: 原来 `mark` **每一步都同步写一次盘**
+            --   （7 步 ⇒ 每条提示 7 次文件写入），而放置时一次会发两条提示
+            --   （吸附结果 + 落地确认）⇒ 放一块地板写盘十几次 ——
+            --   这就是玩家说的"还是卡"的真凶（文件 I/O 在 UE4SS 的 Lua 里很贵）。
+            --   ⇒ 现在: ① 默认**关掉**（`notify_trace = true` 才记）；
+            --           ② 开着时也只进缓冲，由结尾**节流**写一次盘。
+            --   崩溃取证: 需要时把 `notify_trace` 改成 true 就能恢复原来的行为。
+            local trace_on = false
+            pcall(function()
+                trace_on = (require("pwpr_config").get("notify_trace") == true)
+            end)
             local function mark(s)
+                if not trace_on then return end
                 if Log ~= nil and Log.emit ~= nil then
                     pcall(Log.emit, "[ns] " .. s)
-                    if Log.flush ~= nil then pcall(Log.flush) end
                 end
             end
             mark("开始")
@@ -1222,6 +1232,12 @@ Hud.CHANNELS = {
             end                -- G: used == nil（否则已经成功，不用再试下一种样式）
           end                  -- F: 样式循环（normal -> error 或相反）
         end                    -- A: notify_own_widget
+
+            -- ★ 只在最后**节流**写一次盘（原来每一步都写，见上面 mark 的说明）。
+            --   用 throttled_flush: 一秒内最多写一次，既不丢内容也不拖慢放置。
+            if Log ~= nil and Log.throttled_flush ~= nil then
+                pcall(Log.throttled_flush, 1.0)
+            end
 
 -- 【探索期遗留·已放弃】『借用游戏自己文本框』的路线（notify_allow_borrow，默认关）—— 自建控件已走通，这条路不再用；配套键 notify_textblock_filter 也废弃。
 

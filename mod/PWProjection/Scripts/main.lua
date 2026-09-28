@@ -82,6 +82,8 @@ local MeshMap  = require("pwpr_meshmap")
 local Session  = require("pwpr_session")
 local Ghost    = require("pwpr_ghost")
 local Snap     = require("pwpr_snap")
+local BuildSnap = require("pwpr_buildsnap")
+local Placed = require("pwpr_placed")
 local Probe    = require("pwpr_probe")
 local Hud      = require("pwpr_hud")
 local Notify   = require("pwpr_notify")
@@ -628,7 +630,260 @@ end
 --- refresh_projection(reason, rebuild)
 ---   rebuild = false : 只是"挪动/旋转"，局部实例模式下改组件变换就够了
 ---   rebuild = true  : 显示内容变了（换层），必须重灌实例
-local function refresh_projection(reason, rebuild)
+-- ---------------------------------------------------------------------------
+-- ★★ "已经放上去的那一件，投影就不再画"（玩家 2026-09-29 要求）
+--
+--   不这么做的话: 实物和投影蓝色网格重合 ⇒ 深度争夺 ⇒ 彩色/蓝色交替闪。
+--   机制、安全约定见 `pwpr_placed.lua` 的文件头。
+--
+--   ⚠️ 这三个是**前向声明**: 它们互相引用（放下一件 ⇒ 重灌 ⇒ 又可能放下一件），
+--      所以先声明再赋值。**千万不要**在下面再写一次 `local function 同名` ——
+--      那会遮蔽外层的（踩坑记录 §43），赋值全落空。
+-- ---------------------------------------------------------------------------
+local placed_rebuild_pending = false
+local placed_watch_on = false
+local start_placed_watch, refresh_projection
+
+--- 重灌投影之前调一次: 算出"哪些记录已经有实物了" ⇒ 写进 Ghost.skip
+--- 返回: 隐藏件数（失败或没开这个功能时返回 0）
+local function apply_placed_mask(reason)
+    local n = 0
+    -- ★★★ 2026-09-29 第二次崩溃后: **枚举关卡建筑**这条路默认关闭
+    --   （`level.Actors` 会保留已摧毁的 actor ⇒ 读它就是原生访问违例；
+    --    而且死对象还占着记录位置 ⇒ "拆掉恢复"永远不生效）。
+    --   见 pwpr_config.lua 里 ghost_hide_enum 的说明。
+    local enum_on = false
+    pcall(function()
+        enum_on = (Config.get("ghost_hide_enum") == true)
+    end)
+    if not enum_on then
+        Ghost.skip = nil      -- 清空"已放上的"名单: 重新放投影会把所有件都画出来
+        return 0
+    end
+    Ghost.skip = nil
+    local ok, a = pcall(function()
+        return Placed.refresh(Session.bp, Session.place())
+    end)
+    if ok and a ~= nil then
+        Ghost.skip = Placed.hidden
+        n = a
+    end
+    if n > 0 then
+        Log.emit(string.format(
+            "  [placed] %s: 有 %d 件已经放上去了 ⇒ 这些**不再画**（拆掉会自动恢复）",
+            tostring(reason), n))
+    end
+    return n
+end
+
+--- ★ 刚放下一件时（玩家 2026-09-29 提的方案，已实现）: **只入队，不立刻隐藏**。
+---
+---   为什么（两个实测问题一起解决）:
+---     ① **卡顿**: 原来每放一件都要重灌一次投影（哪怕是增量的）；
+---        现在连放 20 块只在**停下来之后**重灌一次；
+---     ② **偶尔漏一块**: 放得快的时候，几个"待确认"会互相覆盖，
+---        偶尔有一块没被处理。现在每条记录**只入队一次**，谁也不会丢。
+---   代价: 连放期间那些件**暂时还会闪**，等停下来（默认 3 秒）才一起消失 ——
+---   玩家明确认可这个取舍（配置 `ghost_hide_placed_batch_s`，设 0 = 立刻处理）。
+local placed_batch_gen = 0
+
+--- 清算: 把"这期间放上的"一次性从投影里去掉（只重灌受影响的组）
+local function flush_placed_batch(reason)
+    local list = Placed.take_pending()
+    if #list == 0 then return 0 end
+    local n, why = Ghost.rehide(list)
+    if n == nil then
+        -- ★ 把"为什么没用增量路"写出来 —— 否则只会看到"卡一下然后重灌"，
+        --   完全不知道是门槛拒了（2026-09-29 就是这么绕了一圈）。
+        Log.emit(string.format(
+            "  [placed] 增量重灌不可用（%s）⇒ 退回完整重灌（会慢一点）",
+            tostring(why)))
+        refresh_projection("放上了 " .. tostring(#list) .. " 件", true)
+        return #list
+    end
+    Placed.last_src = string.format("批量隐藏 %d 件（只重灌 %d 个组件）",
+        #list, n)
+    Log.emit(string.format(
+        "  [placed] %s ⇒ 把这期间放上的 %d 件一起从投影里去掉"
+        .. "（只重灌 %d 个组件，没重灌整个投影）",
+        tostring(reason), #list, n))
+    if Notify ~= nil then
+        Notify.show(string.format("投影已更新: 这期间放上的 %d 件不再画", #list),
+            string.format("ghost updated: %d placed hidden", #list))
+    end
+    return #list
+end
+
+local function on_ghost_placing(rec_idx)
+    if not Ghost.visible or rec_idx == nil then return end
+    local added = Placed.hide_now(rec_idx)
+    if added then
+        Log.line(string.format(
+            "  [placed] 记录 #%d 已放上 ⇒ 入队（待处理 %d 件；等停下来一起从投影里去掉）",
+            rec_idx, Placed.pending_count()))
+    end
+    -- ★ 尾部防抖: 每来一件就把"清算时刻"往后推；真正停下来才清算。
+    local batch_s = 3.0
+    pcall(function()
+        local v = require("pwpr_config").get("ghost_hide_placed_batch_s")
+        if tonumber(v) ~= nil then batch_s = tonumber(v) end
+    end)
+    if batch_s <= 0 then
+        flush_placed_batch("批量已关闭")
+        start_placed_watch()
+        return
+    end
+    placed_batch_gen = placed_batch_gen + 1
+    local my = placed_batch_gen
+    -- ★ 看门狗同时启动: 它每 2.5 秒会检查"队列安静够久了没有"（兜底清算），
+    --   所以就算下面这个延时回调丢了，清算也一定会发生。
+    start_placed_watch()
+    Sched.game_thread(function()
+        if my ~= placed_batch_gen then return end     -- 期间又来新的了 ⇒ 这轮作废
+        pcall(function()
+            if Ghost.visible then
+                flush_placed_batch(string.format("安静了 %.0f 秒", batch_s))
+                start_placed_watch()
+            end
+        end)
+    end, math.floor(batch_s * 1000))
+end
+
+--- 落地确认成功: 把 actor 句柄记下来（"拆掉检测"要用）
+local function on_ghost_placed_confirmed(rec_idx, actor)
+    if rec_idx == nil then return end
+    Placed.stash_actor(rec_idx, actor)
+end
+
+--- 落地确认失败（游戏拒绝了这次放置）: 从待处理队列里去掉（不隐藏它）
+local function on_ghost_placed_failed(rec_idx)
+    if rec_idx == nil then return end
+    if Placed.cancel_pending(rec_idx) then
+        Log.line(string.format(
+            "  [placed] 游戏没建出来 ⇒ 把记录 #%d 从待处理队列去掉（不隐藏它）",
+            rec_idx))
+    end
+end
+
+--- ★ 收到"新建筑出现"的通知 —— 这一版**什么都不做**（只留日志）。
+---   为什么不在这里做事（2026-09-29 两次实测的教训，§49/§50）:
+---   ① 通知来得太早，那一刻 actor 的位置/类型还没填好；
+---   ② "该藏哪一条"我们**已经有更可靠的信息**（吸附时就知道 rec_idx）
+---      ⇒ 由 `on_ghost_placing` / `on_ghost_placed_confirmed` 负责。
+local function on_ghost_new_object(_obj)
+    return
+end
+
+--- ★ 每隔几秒看一眼"我们藏起来的那几件的实物还在不在"（拆掉 ⇒ 恢复渲染）。
+---   两条腿走路（2026-09-29 玩家实测"拆了没效果"之后补的）:
+---     ① 快路径: `Util.valid` 检查引用（便宜，拆了 2.5 秒内就恢复）；
+---     ② 慢路径: **每 3 次 tick 做一次全扫**（约 7.5 秒），用权威结果纠正 ——
+---        因为游戏拆除不一定让 IsValid 立刻变 false（实测有时不灵），
+---        而全扫很便宜（实测这个基地只读 677 个 actor）。
+---   ★ 名单变了也**不重灌整个投影** —— 让 `Ghost.rehide` 只动受影响的组。
+local placed_watch_tick_count = 0
+local function placed_watch_tick()
+    pcall(function()
+        if not Ghost.visible then return end
+        placed_watch_tick_count = placed_watch_tick_count + 1
+
+        -- ★★ 自愈兜底（2026-09-29 玩家实测: "停了十几秒都没清算、也没提示"）:
+        --   批量清算原来**只靠一个延时回调**。万一那个回调没跑到，
+        --   待处理队列就会一直挂着、投影永远不更新。
+        --   ⇒ 这里每 2.5 秒看一眼: 队列安静够久就直接清算 ——
+        --     于是"清算"不再依赖任何单点。
+        local batch_s = 3.0
+        pcall(function()
+            local v = require("pwpr_config").get("ghost_hide_placed_batch_s")
+            if tonumber(v) ~= nil then batch_s = tonumber(v) end
+        end)
+        if batch_s > 0 and Placed.pending_count() > 0
+            and Placed.pending_idle_s() >= batch_s then
+            flush_placed_batch(string.format("兜底清算（队列安静了 %.1f 秒）",
+                Placed.pending_idle_s()))
+        end
+
+        local changed = false
+        -- ★★★ 2026-09-29 崩溃后的默认关闭: 这条"查引用还在不在"的快路径
+        --   会对**已被摧毁的 actor** 调 `Util.valid()` —— 而 UE4SS 的这类调用
+        --   一旦对象真死了就是**原生访问违例**（本次崩溃栈 44 帧全在 UE4SS 里，
+        --   错误码 `EXCEPTION_ACCESS_VIOLATION reading 0xffff...ffff`）。
+        --   **原生崩溃 pcall 抓不住**，所以唯一安全的做法是"别去碰"。
+        --   而且它本来也不可靠（日志里一直报 `15 个引用，15 个存活`，
+        --   而玩家明明已经拆了）。
+        --   ⇒ 默认关闭，恢复完全交给**兜底全扫**（它是重新枚举活对象，天然安全）。
+        --   想再试就 `ghost_hide_alive_check = true`。
+        local alive_check = false
+        pcall(function()
+            alive_check = (require("pwpr_config").get("ghost_hide_alive_check") == true)
+        end)
+        local delta = nil
+        if alive_check then delta = Placed.check_alive() end
+        if delta ~= nil and #delta > 0 then
+            changed = true
+            Ghost.rehide(delta)
+        end
+        -- ★★ 兜底全扫改成**分片**（2026-09-29 玩家反馈"每次刷新都会卡顿"）:
+        --   原来每个扫描周期都**一次性**读完整个关卡建筑列表（600+ 个 actor 的
+        --   位置/类型/朝向全是跨边界调用）⇒ 那一帧必然卡一下。
+        --   现在每个 tick 只读一小片（150 个），几帧扫完 ⇒ **单帧开销很小**，
+        --   不再有可见的卡顿；而且只有"确实藏了东西"时才扫（没藏 = 零开销）。
+        --   ★ 另外: 正在批量放置（队列非空）时**不扫** —— 别和放置抢那一帧。
+        local scan_every = 3
+        pcall(function()
+            local v = require("pwpr_config").get("ghost_hide_scan_interval_s")
+            if tonumber(v) ~= nil and tonumber(v) > 2.5 then
+                scan_every = math.max(1, math.floor(tonumber(v) / 2.5))
+            end
+        end)
+        local enum_on = false
+        pcall(function()
+            enum_on = (require("pwpr_config").get("ghost_hide_enum") == true)
+        end)
+        -- ★★ 周期性扫描还要**单独再过一个开关**（`ghost_hide_scan`，默认关）:
+        --   它是两次崩溃的路线（就在玩家拆完建筑之后去读那个 pending-kill 对象）。
+        local scan_on = false
+        pcall(function()
+            scan_on = (require("pwpr_config").get("ghost_hide_scan") == true)
+        end)
+        local scan_due = enum_on and scan_on
+            and ((placed_watch_tick_count % scan_every) == 0)
+        if (not changed) and scan_due and Placed.pending_count() == 0 then
+            local sd, state = Placed.scan_step(150)
+            if sd ~= nil and #sd > 0 then
+                changed = true
+                local n = Ghost.rehide(sd)
+                if n == nil then
+                    refresh_projection("有建筑被拆掉了", true)
+                else
+                    Log.emit(string.format(
+                        "  [placed] 分片全扫发现名单变了 ⇒ 只重灌 %d 个组件（%d 条记录）",
+                        n, #sd))
+                end
+            end
+        end
+        if changed then
+            Notify.show("投影已跟着实际建筑更新（拆掉/新建）",
+                "ghost sync (dismantle/build)")
+        end
+    end)
+end
+
+start_placed_watch = function()
+    if placed_watch_on == true then return end
+    placed_watch_on = true
+    Sched.game_thread(function()
+        placed_watch_on = false
+        placed_watch_tick()
+        -- 只有"还藏着东西"或"还有待处理的"时才继续排；否则停下来（不空转）
+        if Ghost.visible
+            and (Placed.count() > 0 or Placed.pending_count() > 0) then
+            start_placed_watch()
+        end
+    end, 2500)
+end
+
+refresh_projection = function(reason, rebuild)
     if not Ghost.visible then return end
     local place = Session.place()
     if place == nil then
@@ -659,6 +914,8 @@ local function refresh_projection(reason, rebuild)
     end
 
     local mode, idx = Session.filter()
+    -- ★ 重灌前同步一次"已放上的不渲染"名单（玩家换层/刷新时也要保持准确）
+    apply_placed_mask(reason)
     local okf, ferr = Ghost.fill(Session.bp, place, mode, idx)
     if not okf then
         Log.emit("!! 投影刷新失败: " .. tostring(ferr))
@@ -721,6 +978,8 @@ local function do_ghost_toggle()
     end
 
     local mode, idx = Session.filter()
+    -- ★★ 重灌之前先算"哪些已经放上去了"（放上的就不画了，见 pwpr_placed.lua）
+    local n_placed = apply_placed_mask("按 K 放投影")
     local okf, ferr = Ghost.fill(Session.bp, place, mode, idx)
     if not okf then
         Log.emit("!! 投影构建失败: " .. tostring(ferr))
@@ -932,6 +1191,7 @@ local function snap_run(quiet)
             -- ★ 世界空间实例（能力探测发现 AddInstance 不可用时的退路）里，
             --   实例坐标是**绝对世界坐标**，改组件变换完全无效 ⇒ 必须重灌。
             local fmode, fidx = Session.filter()
+            apply_placed_mask("按吸附结果重建")
             Ghost.fill(Session.bp, p2, fmode, fidx)
             Log.emit("  投影已按吸附结果重建（世界空间实例模式必须重灌）。")
         else
@@ -1041,6 +1301,8 @@ end
 local function do_help()
     Log.clear()
     Log.line("=================== PWProjection 帮助 ===================")
+    Log.line(string.format("构建标记: %s（改了功能就 +1；这一行能确认游戏里跑的是哪一版）",
+        tostring(Util.BUILD)))
     Log.line("")
     -- ★ 按键一览改成从 Notify.KEYS 生成（单一来源）
     --   以前这些行是手写的双份文案，加了键就得记得改三处（帮助/控制台/文档）。
@@ -1084,11 +1346,13 @@ local function do_help()
     Log.line("  " .. Hud.describe())
     emit_lines(Session.status_lines())
     Log.line("  " .. Ghost.describe())
-    -- ★ 建筑吸附: 把"上一次吸附算出了什么"留在这里 ——
-    --   吸附是"按一下看结果"的操作，FAQ 里第一个问题就是"它到底对上了没有"。
-    Log.line("  建筑吸附: " .. ((Snap.last ~= nil)
+    -- ★ 建造吸附（钩子）: 一眼看出"钩子注册上没有、见过几次请求、吸上几件"
+    emit_lines(BuildSnap.status_lines())
+    Log.line("  " .. Placed.status_line())
+    -- ★ 投影对齐（另一件事，按 U）: 把"上一次吸附算出了什么"留在这里
+    Log.line("  投影对齐: " .. ((Snap.last ~= nil)
         and Snap.describe(Snap.last)
-        or "还没用过（按小键盘 7；键名可在配置 snap_key 改）"))
+        or "还没用过（按 U；放下投影时的自动对齐默认已关）"))
     local gate_ok, gate_why = Ghost.check_gate(nil)
     Log.line(string.format("  投影门禁: %s (%s)", tostring(gate_ok), tostring(gate_why)))
     Log.line("")
@@ -1099,6 +1363,9 @@ local function do_help()
     Log.line("")
     Log.line("配置: " .. tostring(Config.path))
     emit_lines(Config.brief_lines())
+    if Config.multi_object_warn ~= nil then
+        Log.line("  !! " .. tostring(Config.multi_object_warn))
+    end
     Log.line("")
     Log.line("目录:")
     Log.line("  Scripts : " .. Util.script_dir)
@@ -1204,6 +1471,7 @@ local function rebuild_ghost(reason, force)
         return false
     end
     local mode, idx = Session.filter()
+    apply_placed_mask("重建投影")
     local okf, ferr = Ghost.fill(Session.bp, place, mode, idx)
     if not okf then
         Log.emit("!! 重建投影失败: " .. tostring(ferr))
@@ -1305,13 +1573,52 @@ end
 
 print(TAG .. " ================================================")
 print(TAG .. " PWProjection loading (blueprint projection mod)")
+print(TAG .. " BUILD = " .. tostring(Util.BUILD))
 print(TAG .. " ================================================")
 
 local cfg_values, cfg_note = nil, "(读取失败)"
 pcall(function() cfg_values, cfg_note = Config.load(Util.script_dir) end)
 Log.emit("配置: " .. tostring(cfg_note))
+-- ★ 配置文件写法有问题时要**一眼看到**（玩家 2026-09-29 实测踩过:
+--   往文件里另起了一个 `{}` 加键 ⇒ 旧版严格解析会**整份退回默认值**，
+--   连 ghost_enabled 都掉回 false、投影被锁，而他只看到"我的配置没生效"。）
+if Config.multi_object_warn ~= nil then
+    Log.emit("!! " .. tostring(Config.multi_object_warn))
+    print(TAG .. " !! config has multiple top-level {} objects (merged this time)")
+end
 
 Sched.detect()
+
+-- ---------------------------------------------------------------------------
+-- ★ 日志"攒够再写"（2026-09-29 玩家提的策略）
+--
+--   放置路径上已经**没有**写盘/写控制台了（逐行只进内存缓冲）；
+--   这一条是给日志一个**稳定的落盘时机**，不再依赖"碰巧发生的按键/提示":
+--     · 隔 `log_flush_interval_s` 秒（默认 5）至少落一次；
+--     · 缓冲攒够 `log_flush_lines` 行（默认 200）也落一次。
+--   崩溃代价: 最多丢这几秒的**诊断日志**（游戏数据完全不受影响）。
+--   每 5 秒一次的定时回调本身开销可以忽略（没有内容要写时它什么都不做）。
+-- ---------------------------------------------------------------------------
+local function log_autosave_tick()
+    pcall(function()
+        if Log.maybe_flush ~= nil then Log.maybe_flush() end
+    end)
+    -- 下一定时（自续；不依赖任何按键/事件）
+    Sched.game_thread(log_autosave_tick, 2500)
+end
+
+pcall(function()
+    local iv = tonumber(Config.get("log_flush_interval_s"))
+    local ln = tonumber(Config.get("log_flush_lines"))
+    if iv ~= nil and iv > 0 then Log.autosave_interval_s = iv end
+    if ln ~= nil and ln > 0 then Log.autosave_lines = ln end
+    if Log.autosave_interval_s > 0 then
+        Sched.game_thread(log_autosave_tick, 2500)
+        Log.line(string.format(
+            "日志落盘策略: 每 %.0f 秒或攒够 %d 行写一次（放置路径上不写盘）",
+            Log.autosave_interval_s, Log.autosave_lines))
+    end
+end)
 
 -- 参数同步到会话
 Session.rot_step = tonumber(Config.get("rotate_step_deg")) or 15.0
@@ -1371,6 +1678,9 @@ if hook_on then
             RegisterLoadMapPreHook(function()
                 -- ★ 只碰 Lua 状态，不碰引擎。任何一处真出问题也只记录、不抛出。
                 pcall(function() Ghost.forget("LoadMapPre") end)
+                -- ★ 同时忘掉"已放上的件"的名单与 actor 引用 ——
+                --   跨世界持有 actor 引用正是这个钩子要防的事（野指针）。
+                pcall(function() Placed.forget() end)
                 pcall(function() Hud.drop_world_refs("LoadMapPre") end)
                 pcall(function() Session.deactivate() end)
                 pcall(function()
@@ -1389,6 +1699,74 @@ else
     Log.emit("!! LoadMapPre 钩子: 已按配置关闭（hook_load_map_pre=false）")
     Log.emit("   ★ 警告: 关掉它之后，「回标题 → 重进世界」后第一次操作可能闪退（跨世界野指针）")
     print(TAG .. " LoadMapPre hook: DISABLED (hook_load_map_pre=false)")
+end
+
+-- ---------------------------------------------------------------------------
+-- ★★ 建造吸附（玩家真正要的那个"吸附"）: 挂游戏的放置请求钩子
+--
+-- 做什么: 手拿建筑准备放下时，如果它与投影里同类型的那一件对得上，
+--         就把**这次放置请求里的坐标/朝向**改写成投影里那一件的精确值 ⇒
+--         放下去正好在投影上。
+--
+-- ★ 为什么用钩子而不是"读预览对象": 游戏那个半透明预览 Lua 抓不到
+--   （PWRecon 第四轮已实测，见 docs\踩坑记录.md §3f-7）；
+--   而放置请求这条链路里**带着最终坐标**，是能改的那一环。
+--
+-- ★ 依赖注入: 把"读配置 / 拿当前投影"这两件事交给 main 提供 ——
+--   这样 buildsnap 模块不必反向 require Ghost/Session，避免模块成环。
+-- ---------------------------------------------------------------------------
+
+BuildSnap.deps.get = function(k) return Config.get(k) end
+-- ★★★ 2026-09-29 实测踩到的坑: `Placed.deps` **从来没被赋值过**！
+--   `Placed.refresh_delta()` 里有 `local deps = Placed.deps; if deps == nil ... return`
+--   ⇒ **兜底全扫一次都没跑过** ⇒ 拆除之后投影永远不恢复（玩家实测: 等 30 秒没反应）。
+--   教训: 模块之间靠 `X.deps = {...}` 注入依赖时，**注入点也要有检查**
+--   （否则"依赖没注入"会表现为"功能静默失效"，看不出任何错）。
+Placed.deps = {
+    get = function(k) return Config.get(k) end,
+    context = function()
+        if not Session.active or Session.bp == nil or not Ghost.visible then
+            return nil
+        end
+        local place = Session.place()
+        if place == nil then return nil end
+        return Session.bp, place
+    end,
+}
+-- ★ 游戏通知"有新建筑出现"时，除了 buildsnap 自己的落地确认，
+--   也顺手把"这一件已经放上了 ⇒ 投影里别再画"办掉（玩家 2026-09-29 要求）。
+--   复用 buildsnap 那一次 NotifyOnNewObject 注册: 一个回调比注册两次更稳。
+BuildSnap.deps.on_new_object = function(obj)
+    pcall(on_ghost_new_object, obj)
+end
+-- ★ 吸附那边"正要往哪一条记录放" ⇒ 投影立刻精确隐藏它（不用重扫）
+BuildSnap.deps.on_placing = function(rec_idx)
+    pcall(on_ghost_placing, rec_idx)
+end
+-- ★ 落地确认成功/失败 ⇒ 记下 actor / 撤销隐藏
+BuildSnap.deps.on_placed_confirmed = function(rec_idx, actor)
+    pcall(on_ghost_placed_confirmed, rec_idx, actor)
+end
+BuildSnap.deps.on_placed_failed = function(rec_idx)
+    pcall(on_ghost_placed_failed, rec_idx)
+end
+BuildSnap.deps.context = function()
+    -- 只在"投影正显示着 + 加载了蓝图"时给上下文；否则返回 nil（= 不工作）
+    if not Session.active or Session.bp == nil or not Ghost.visible then
+        return nil
+    end
+    local place = Session.place()
+    if place == nil then return nil end
+    return Session.bp, place
+end
+BuildSnap.deps.player_aim = function() return Session.aim() end
+BuildSnap.deps.notify = function(cn, en) Notify.show(cn, en) end
+
+do
+    local okB, whyB = BuildSnap.install()
+    Log.emit(string.format("建造吸附钩子: %s  %s", tostring(okB), tostring(whyB)))
+    print(TAG .. " build-snap hook: " .. (okB and "OK" or "FAILED")
+        .. " (" .. Util.ascii(tostring(whyB)) .. ")")
 end
 
 -- ---------------------------------------------------------------------------
@@ -1560,6 +1938,9 @@ print(TAG .. " ------------------------------------------------")
 
 Log.line("")
 Log.line("================ PWPR 启动 ================")
+Log.line("构建标记: " .. tostring(Util.BUILD)
+    .. "    （改了功能就 +1；看日志第一眼先确认这一行，"
+    .. "对不上说明部署的是旧版）")
 Log.line("配置: " .. tostring(cfg_note))
 Log.line("蓝图库: " .. tostring(lib_note))
 Log.line("网格覆盖表: " .. tostring(ov_note))

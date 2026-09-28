@@ -15,7 +15,8 @@
 | `check_meshmap.py` | 网格覆盖表校验（含重复键、多网格、路径合法性） |
 | `check_config_doc.py` | **配置说明文档检查** —— 每个 `DEFAULTS` 配置键都必须写在 `docs\配置说明.md` 里（防文档过期、防重复造开关） |
 | `check_bom.py` | **BOM 检查** —— 所有 `.ps1` 必须 UTF-8 **with BOM**（PS 5.1 按 ANSI 读会让中文乱码、脚本语法崩；一天栽过两次） |
-| `snap_sim.py` | **建筑吸附算法验证**（合成基地 8 个场景）—— 本机没有 Lua 解释器，所以它是 `pwpr_snap.lua` 的 Python 复刻，并且会**反向读 Lua 源码**校验常量与关键结构（改了 Lua 不同步就报错）。第一版算法就是被它抓出"格状对称会把投票骗走"的（见 `docs\踩坑记录.md` §35） |
+| `snap_sim.py` | **投影对齐算法验证**（合成基地 8 个场景）—— 本机没有 Lua 解释器，所以它是 `pwpr_snap.lua` 的 Python 复刻，并且会**反向读 Lua 源码**校验常量与关键结构（改了 Lua 不同步就报错）。第一版算法就是被它抓出"格状对称会把投票骗走"的（见 `docs\踩坑记录.md` §35） |
+| `buildsnap_sim.py` | **建造吸附纯逻辑验证** —— `pwpr_buildsnap.lua` 的复刻（id 归一化 / 四元数↔yaw / **两种选目标方式（按距离、按准星角度锥）** / **类型对不上时的放宽 + 学到映射** / 阈值边界），同样反向读 Lua 源码防漂移。抓出过"id 归一化顺序错 ⇒ 类型永远匹配不上 ⇒ 功能完全不生效"（§39），并且**把玩家实测日志里的真实数据固化成回归用例**（§40: 游戏 id `Wooden_foundation` vs 蓝图 `Wood_Foundation`） |；**另含两道守卫**: `check_config_defaults`（读 `pwpr_config.lua` 校验吸附灵敏度/隐藏开关的默认值 —— 改了默认值没同步就红）与 `check_placed_api`（钉住 `Placed.hide_now` / `Ghost.rehide` 这些跨模块约定名） |
 | `make_snapshot.ps1` | **发版快照**：核对"工作区源码 == 游戏里正在跑的那份"，打包 mod+docs+tools，并生成 SHA256 清单<br>`powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\make_snapshot.ps1 -Label "2026-09-28_跨存档投影可用版"` |
 | `cleanup.ps1` | 从游戏里清掉旧 mod（PWRecon 等） |
 | `pw_recon.py` | 【已过时】旧的存档解析工具，只对 0.1.4 存档有效 |
@@ -42,6 +43,9 @@ python tools\luacheck_selftest.py
 
 # 建筑吸附算法（合成数据，8/8 必须通过）—— 改了 pwpr_snap.lua 就要跑
 python tools\snap_sim.py
+
+# 建造吸附纯逻辑（id 归一化 / 四元数↔yaw / 找目标）—— 改了 pwpr_buildsnap.lua 就要跑
+python tools\buildsnap_sim.py
 ```
 
 **它检查什么**（详见 `docs/踩坑记录.md` 第 10、16、17 节）：
@@ -57,6 +61,7 @@ python tools\snap_sim.py
 | `[%w]` 紧接 `_` | `%w` 不含下划线，带下划线的名字会被**静默漏掉** |
 | ★ **保留字当字段名/方法名** | `t.repeat` / `obj:end` 是**语法错误**，整个文件加载不了（真实踩过，见第 16 节） |
 | ★ **禁用的反射枚举** | `ForEachProperty` / `ForEachFunction` 实测**把游戏打崩**；改用 `FindAllOf("精确类名")`（真实踩过，见第 17 节） |
+| ★ **同名 local 遮蔽外层**（第 12 项，2026-09-29 新增） | `local res` 在外层已有、内层又 `local res` ⇒ 内层赋值不影响外层。**合法 Lua、不报错**，真实后果是"算完了却没生效、整个功能静默什么都不做"（见第 43 节）。正反样例在 `luacheck_selftest.py` |
 | 裸 `unpack(` | Lua 5.4 里不存在，要用 `table.unpack` |
 | `print()` 里有中文 | 控制台会乱码 |
 | 跨模块接口（`Mod.func(...)` 是否存在） | 每个文件自己合法、连起来才错的拼写问题 |

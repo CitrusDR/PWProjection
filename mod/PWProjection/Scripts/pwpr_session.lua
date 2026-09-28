@@ -73,6 +73,37 @@ function Session.heading_yaw()
     return 0.0
 end
 
+--- 玩家"准星"（位置 + 视线方向，单位向量）。
+---
+--- 干什么用: 蓝图建造模式（`buildsnap_mode = "blueprint"`）要判断
+---   "玩家准星指着投影里的哪一件"。
+--- ★ 为什么要有 pitch（俯仰）: 投影里的屋顶/二层件在上方，只用水平朝向选不准；
+---   控制器视角的 Pitch 正好就是玩家仰头/低头的角度。
+---
+--- 返回 x,y,z, dirx,diry,dirz；拿不到返回 nil
+function Session.aim()
+    local x, y, z = Session.player_pos()
+    if x == nil then return nil end
+    -- 优先用控制器视角（含俯仰）；拿不到就退回角色朝向（水平）
+    local pitch, yaw = 0.0, nil
+    local ok, res = pcall(function()
+        local pcs = FindAllOf("PlayerController")
+        if type(pcs) ~= "table" or #pcs == 0 then return nil end
+        local pc = Util.unwrap(pcs[1])
+        if not Util.valid(pc) then return nil end
+        local p, y2, _ = Util.rot_of(pc:GetControlRotation())
+        return { p = p, y = y2 }
+    end)
+    if ok and type(res) == "table" then
+        pitch, yaw = res.p, res.y
+    end
+    if yaw == nil then yaw = Session.heading_yaw() end
+    local pr, yr = math.rad(pitch), math.rad(yaw)
+    local cp = math.cos(pr)
+    -- UE 里 Y 轴向右、Pitch 正 = 抬头
+    return x, y, z, cp * math.cos(yr), cp * math.sin(yr), math.sin(pr)
+end
+
 --- 前后左右单位向量（水平面）
 function Session.basis()
     local yaw = math.rad(Session.heading_yaw())

@@ -352,18 +352,47 @@ parse_value = function(text, pos)
 end
 
 --- 返回 值 或 nil, 错误信息
+--- 解析**一个** JSON 值（严格: 整个文件只能有这一个值）
 function Json.decode(text)
-    if type(text) ~= "string" then return nil, "输入不是字符串" end
-    text = text:gsub("^\239\187\191", "")
-    local pos = skip_ws(text, 1)
-    if pos > #text then return nil, "内容为空" end
-    local v, ni = parse_value(text, pos)
-    if v == nil and ni == nil then return nil, "解析失败" end
-    local tail = skip_ws(text, ni)
-    if tail <= #text then
-        return decode_error(text, tail, "末尾有多余内容")
+    local values, err = Json.decode_multi(text)
+    if values == nil then return nil, err end
+    if #values ~= 1 then
+        return nil, string.format(
+            "文件里有 %d 个顶层 JSON 值（应该只有一个对象）", #values)
     end
-    return v
+    return values[1]
+end
+
+--- 解析**一到多个** JSON 值（宽松: 允许文件里不小心写了两个 `{}`）。
+---
+--- ★ 为什么要有它（2026-09-29 玩家实测踩的坑）:
+---   配置文件本来是"一个 JSON 对象"，但玩家往里加自定义键时**另起了一个 `{}`**，
+---   于是 `Json.decode` 报"末尾有多余内容" ⇒ **整份配置被当成解析失败、全部退回默认值**
+---   （连 `ghost_enabled` 都掉回 false，投影直接锁上）—— 玩家只会看到"我的配置没生效"。
+---   ⇒ 现在允许多个顶层对象，由调用方合并；同时**大声提示**写法不对。
+--- 返回 values(数组), 错误, 多出来的第一个值的序号（没有则为 nil）
+function Json.decode_multi(text)
+    if type(text) ~= "string" then return nil, "输入不是字符串", nil end
+    text = text:gsub("^\239\187\191", "")
+    local values = {}
+    local pos = skip_ws(text, 1)
+    if pos > #text then return nil, "内容为空", nil end
+    local extra_index = nil
+    while pos <= #text do
+        local v, ni = parse_value(text, pos)
+        if v == nil and ni == nil then
+            if #values == 0 then return nil, "解析失败", nil end
+            extra_index = #values
+            break
+        end
+        values[#values + 1] = v
+        pos = skip_ws(text, ni)
+        if pos <= #text and #values >= 1 and extra_index == nil then
+            extra_index = #values
+        end
+    end
+    if #values == 0 then return nil, "解析失败", nil end
+    return values, nil, extra_index
 end
 
 return Json

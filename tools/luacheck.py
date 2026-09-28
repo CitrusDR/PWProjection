@@ -315,6 +315,85 @@ def check_block_balance(tokens):
     return problems, depth
 
 
+def check_shadowed_locals(tokens):
+    """检查【同一个函数里同名 local 被声明两次】—— 内层会悄悄遮蔽外层。
+
+    ★ 为什么加这一条（2026-09-29 真实踩到，见 docs/踩坑记录.md §42）:
+      `pwpr_buildsnap.lua` 里我先在外层写了 `local target_id, res, why = ...`，
+      后来重构时在内层分支里写了 `local res = nil` —— **合法 Lua、不报错**，
+      但内层算出来的结果全写进了那个内层变量，出分支后外层 res 还是 nil ⇒
+      `if res == nil then return end` 直接返回 ⇒ **整个 align 模式什么都不做**。
+      症状: 日志里能看到"匹配成功/学到映射"，却没有任何"结果"行，玩家那边就是"没反应"。
+      ⇒ 这类 bug 静态可查，必须让检查器拦住。
+
+    判据: 用一个"块栈"跟踪作用域。
+      - function / if / for / while / do / repeat 都开新作用域（各自有 end/until 收尾）
+      - `local a, b = ...` 在当前作用域登记名字
+      - 若某个名字在**外层**（同一函数内）已经登记过 ⇒ 报错
+      - 同一作用域里重复 `local x` 不算（只是多余），不报
+
+    返回 [(行号, 消息), ...]
+    """
+    problems = []
+    scopes = [{"names": {}, "is_function": True}]
+    pending_do = 0
+    i = 0
+    n = len(tokens)
+
+    def find_outer(name):
+        for k in range(len(scopes) - 1, -1, -1):
+            if name in scopes[k]["names"]:
+                return scopes[k]["names"][name]
+        return None
+
+    while i < n:
+        kind, text, line = tokens[i]
+        if kind == "keyword":
+            if text in ("function", "if"):
+                scopes.append({"names": {}, "is_function": text == "function"})
+            elif text in ("for", "while"):
+                scopes.append({"names": {}, "is_function": False})
+                pending_do += 1
+            elif text == "do":
+                if pending_do > 0:
+                    pending_do -= 1
+                else:
+                    scopes.append({"names": {}, "is_function": False})
+            elif text == "repeat":
+                scopes.append({"names": {}, "is_function": False})
+            elif text in ("end", "until"):
+                if len(scopes) > 1:
+                    scopes.pop()
+            elif text == "local":
+                j = i + 1
+                if j < n and tokens[j][1] == "function":
+                    j += 1
+                names = []
+                while j < n:
+                    k2, t2, l2 = tokens[j]
+                    if k2 == "name":
+                        names.append((t2, l2))
+                        j += 1
+                        if j < n and tokens[j][1] == ",":
+                            j += 1
+                            continue
+                    break
+                cur = scopes[-1]["names"]
+                for name, nline in names:
+                    prev_line = find_outer(name)
+                    if prev_line is not None and name not in cur:
+                        problems.append((
+                            nline,
+                            "local '{}' 遮蔽了第 {} 行的同名 local"
+                            "（同一函数内的外层作用域）—— 内层赋值不会影响外层，"
+                            "典型后果是「算完了却没生效」".format(name, prev_line)))
+                    cur[name] = nline
+                i += 1
+                continue
+        i += 1
+    return problems
+
+
 # ---------------------------------------------------------------------------
 # 3. 剥离注释与字符串（给"调用点扫描"用）
 # ---------------------------------------------------------------------------
@@ -722,6 +801,23 @@ def check_file(path: str, verbose: bool = False) -> int:
         problems += len(rb)
     else:
         print("  [11] [通过] 没有用禁用的反射枚举接口")
+
+    # ---- 12. 同名 local 遮蔽外层（2026-09-29 真实踩到）--------------------
+    print()
+    sh = check_shadowed_locals(tokens)
+    if sh:
+        print("  [严重] {} 处 local 遮蔽了同一函数内的外层同名 local:".format(len(sh)))
+        for line, msg in sh:
+            print("      第 {} 行: {}".format(line, msg))
+        print()
+        print("      ==> 合法 Lua、不报错，但内层的赋值**不会**影响外层变量。")
+        print("          真实后果（2026-09-29）: 外层 `local res` 被判空 ⇒")
+        print("          整个功能静默什么都不做，而日志里前面几行一切正常。")
+        print("          修法: 内层直接给外层变量赋值（不要重新 local），")
+        print("                或者换个名字（res_inner ...）。")
+        problems += len(sh)
+    else:
+        print("  [12] [通过] 没有 local 遮蔽外层的问题")
 
     if verbose:
         print()

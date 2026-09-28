@@ -32,6 +32,24 @@ import luacheck  # noqa: E402
 # ---------------------------------------------------------------------------
 
 BAD = {
+    # ★ 2026-09-29 真实踩到（踩坑记录 §42）: 内层 `local res` 遮蔽外层 `local res`
+    #   ⇒ 内层算出来的结果写进了内层变量，出分支后外层仍是 nil
+    #   ⇒ 整个功能静默什么都不做（日志前面几行还一切正常）。
+    "shadowed_local.lua": '''
+local function f(bp, cfg)
+    local res = nil
+    if cfg == true then
+        local found = bp
+        local res = found          -- ← 遮蔽外层 res！
+        if res ~= nil then
+            -- 以为写的是外层那个 res
+        end
+    end
+    if res == nil then return nil end   -- ← 永远是 nil ⇒ 什么都不做
+    return res
+end
+return f
+''',
     # 本项目真实出现过：双引号字符串里又写了双引号
     "embedded_quote.lua": '''
 local function f()
@@ -187,6 +205,30 @@ return dump_props
 
 GOOD = {
     # ★ 反面样例的【正确写法】必须判为没问题，否则工具会把对的也拦下来
+    "good_shadow_assign.lua": '''
+-- 正确写法: 内层直接给外层变量赋值（不重新 local）
+local function f(bp)
+    local res = nil
+    if bp ~= nil then
+        res = bp[1]
+    end
+    if res == nil then return nil end
+    return res
+end
+return f
+''',
+    "good_shadow_other_function.lua": '''
+-- 不同函数里同名 local 是正常的（不该报）
+local function a()
+    local x = 1
+    return x
+end
+local function b()
+    local x = 2
+    return x
+end
+return a, b
+''',
     "good_pattern_underscore.lua": '''
 local function owner_type(component_full_name)
     -- 对: 字符类里显式加上下划线，先按 _C_<数字> 精确定位

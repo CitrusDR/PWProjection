@@ -622,8 +622,17 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
     end
     Ghost.skel_list = {}
     Ghost.skel_mesh = {}
+    -- ★ "这一组是怎么加出来的"配方（`Ghost.rehide` 用它只重灌受影响的组，
+    --   避免"每次放置都重灌整个投影"造成的卡顿）
+    Ghost.plan = {}
+    Ghost.rec_plan = {}
+    -- ★ 配方的"代次"与世界标记: rehide 只允许在同一代、同一世界里动组件
+    --   （不然会拿旧世界的废组件指针去调引擎 ⇒ 原生访问违例，pcall 也抓不住）
+    Ghost.plan_gen = (Ghost.plan_gen or 0) + 1
+    Ghost.plan_head = Ghost.host      -- 这一批配方属于哪个宿主对象
     Ghost.stats = { components = 0, failed_components = 0, instances = 0,
-                skipped_no_mesh = 0, material_ok = 0, material_fail = 0,
+                skipped_no_mesh = 0, skipped_placed = 0,
+                material_ok = 0, material_fail = 0,
                 material_missing = 0, material_original = 0,
                 material_readback = nil, skeletal_components = 0 }
 
@@ -636,7 +645,13 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
     local MULTI_SEP = "\2"
     for i = 1, #picked do
         local b = bs[picked[i]]
-        if type(b) ~= "table" then
+        -- ★★ 2026-09-29 玩家要求: **已经放上去的那一件就不再渲染**。
+        --   否则实物的彩色网格和投影的蓝色会在同一个位置交替闪烁（肉眼看着就是"闪"）。
+        --   Ghost.skip 是"记录序号 -> true"的表（由 pwpr_placed 算出来）。
+        --   拆掉之后 pwpr_placed 会把它从表里去掉，下一次重灌就又画出来了。
+        if Ghost.skip ~= nil and Ghost.skip[picked[i]] == true then
+            Ghost.stats.skipped_placed = (Ghost.stats.skipped_placed or 0) + 1
+        elseif type(b) ~= "table" then
             -- 蓝图文件损坏时不要抛错（抛错会留下一个没有实例的宿主 actor）
             Ghost.stats.skipped_no_mesh = Ghost.stats.skipped_no_mesh + 1
         else
@@ -658,17 +673,20 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
             else
                 for mi = 1, #meshes do
                     local mesh = meshes[mi]
+                    -- ★ 记的是 { b = 记录, idx = 它在 bp.buildings 里的序号 } ——
+                    --   序号后面要用（"已放上的不渲染"要按序号增删**单个**组里的实例，
+                    --   而不重灌整个投影，见 Ghost.rehide）。
                     if MeshMap.is_skeletal(mesh) then
                         local key = mesh .. SKEL_SEP .. tostring(i)
                             .. MULTI_SEP .. tostring(mi)
-                        groups[key] = { b }
+                        groups[key] = { { b = b, idx = picked[i] } }
                         order[#order + 1] = key
                     else
                         if groups[mesh] == nil then
                             groups[mesh] = {}
                             order[#order + 1] = mesh
                         end
-                        groups[mesh][#groups[mesh] + 1] = b
+                        groups[mesh][#groups[mesh] + 1] = { b = b, idx = picked[i] }
                     end
                 end
             end
@@ -699,7 +717,7 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
         if Log ~= nil then
             Log.line(string.format("[fill] 组 %d/%d 类型=%s 网格=%s 骨骼=%s 件数=%d 复用=%s",
                 i, #order, tostring((groups[key] ~= nil and groups[key][1] ~= nil)
-                    and groups[key][1].t or "?"),
+                    and groups[key][1].b.t or "?"),
                 tostring(base), tostring(is_skel),
                 (groups[key] ~= nil) and #groups[key] or 0,
                 tostring(Util.valid(comp))))
@@ -739,13 +757,28 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
             pcall(function() comp:SetVisibility(true, true) end)
             pcall(function() comp:SetHiddenInGame(false, true) end)
             local list = groups[key]
+            -- ★★ 记一份"这一组是怎么加出来的"（组件 + 每件的相对坐标/朝向 + 记录序号），
+            --   后面 `Ghost.rehide` 靠它**只重灌受影响的这一组**（几件），
+            --   而不是把整个投影重灌一遍（467 件 ⇒ 每次放置都会卡一下，玩家实测反馈）。
+            if Ghost.plan == nil then Ghost.plan = {} end
+            if Ghost.rec_plan == nil then Ghost.rec_plan = {} end
+            local plan_items = {}
             for j = 1, #list do
-                local b = list[j]
+                local it = list[j]
+                local b = it.b
+                local rec_idx = it.idx
                 local rx, ry, rz = BP.rel_cm(b)
                 if rx == nil then
                     Ghost.stats.skipped_no_mesh = Ghost.stats.skipped_no_mesh + 1
                 else
                 local yaw = tonumber(b.yaw) or 0.0
+                plan_items[#plan_items + 1] = { idx = rec_idx, rx = rx, ry = ry,
+                                                 rz = rz, yaw = yaw }
+                if rec_idx ~= nil then
+                    local m = Ghost.rec_plan[rec_idx]
+                    if m == nil then m = {}; Ghost.rec_plan[rec_idx] = m end
+                    m[comp] = true
+                end
                 if is_skel then
                     -- 骨骼网格: 组件本身就是那一件，直接设它的变换。
                     -- 记进 skel_list，apply_transform 时按"放置变换 ∘ 局部偏移"重算。
@@ -794,6 +827,9 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
                 end
                 end
             end
+            -- 这一组的"配方"存下来（含骨骼组: 骨骼组件一件一组，重灌就是显/隐它）
+            Ghost.plan[comp] = { skel = is_skel, world = ok_world,
+                                 items = plan_items }
         end
     end
 
@@ -803,6 +839,10 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
     end
     Ghost.stats.failed_components = failed_components
     Ghost.visible = true
+    -- ★ 记下这次投影的放置变换 —— `Ghost.rehide` 在"世界空间实例"模式下也要用它
+    --   才能把实例坐标算对（那个模式下实例存的是绝对世界坐标）。
+    Ghost.last_place = { x = place.x, y = place.y, z = place.z,
+                         yaw = place.yaw or 0.0 }
     -- ★ 记下"这个投影是在哪个世界建出来的" —— 之后所有触碰组件的操作
     --   都先用它做一次**字符串比较**，避免摸到上个世界的废对象（见 stale_world）。
     Ghost.world_name = Util.world_tag()
@@ -819,9 +859,130 @@ function Ghost.fill(bp, place, mode, layer_index, lo, hi)
     return true, nil
 end
 
+--- ★★ **只重灌受影响的组**（2026-09-29 加的，为修"每次放置都卡一下"）
+---
+--- 背景: "已放上的不渲染"要求把某一组里的某几件去掉。原来的做法是**整个投影重灌**
+---   （实测 467 件 / 98 组件）—— 每放一块地板都来一遍，玩家实测反馈"每次放置都有
+---   细微卡顿，放多了很明显"。
+---   而 `Ghost.fill` 已经把每一组的"配方"记在 `Ghost.plan[comp]` 里了
+---   （组件 + 每件的相对坐标/朝向 + 记录序号）⇒ 现在可以只对**含这些记录的组**
+---   做一次 `ClearInstances` + 重新加（通常只有 1~2 个组、十来件）。
+---
+--- records: 记录序号数组（变了的那些；增删都行 —— 本函数完全按 `Ghost.skip` 来）
+--- 返回: 重灌了几个组件；nil + 原因 表示"配方不可用，请走完整的 fill"
+function Ghost.rehide(records)
+    if type(records) ~= "table" or #records == 0 then return 0 end
+    if type(Ghost.plan) ~= "table" or type(Ghost.rec_plan) ~= "table" then
+        return nil, "还没有配方（先做一次完整 fill）"
+    end
+    -- ★★ 硬门槛（2026-09-29）: 只有"投影正显示着 + 配方代次还在 + 同一个宿主"
+    --   才允许直接动组件。任何一条不满足就返回 nil，让调用方走完整重灌
+    --   （那条路每一步都会重新创建/校验对象，安全得多）。
+    --
+    -- ⚠️ 这里**不能**用 `Util.world_tag()` 判断"是不是同一个世界" —— 实测它
+    --   并不稳定（同一会话里两次调用可能不同）⇒ 会一直误判 ⇒ rehide 永远拒绝
+    --   ⇒ 每次都退化成"整个投影重灌"（又慢又卡，玩家实测反馈过）。
+    --   可靠的判据: ① 投影可见；② 配方代次还在（clear/forget 会清掉）；
+    --   ③ 配方属于当前宿主（宿主在一次会话里是稳定的）。
+    if Ghost.visible ~= true then return nil, "投影没显示" end
+    if Ghost.plan_gen == nil then return nil, "配方已失效（重灌/收起过）" end
+    if Ghost.plan_head ~= nil and Ghost.plan_head ~= Ghost.host then
+        return nil, "配方属于旧的宿主对象"
+    end
+    local comps, order = {}, {}
+    for i = 1, #records do
+        local m = Ghost.rec_plan[records[i]]
+        if type(m) == "table" then
+            for c in pairs(m) do
+                if comps[c] ~= true then
+                    comps[c] = true
+                    order[#order + 1] = c
+                end
+            end
+        end
+    end
+    if #order == 0 then return 0 end          -- 这些记录不在任何组里（比如缺网格）
+
+    local ok_world = (Ghost.instance_mode == "world")
+    local n_comp, n_inst = 0, 0
+    for i = 1, #order do
+        local comp = order[i]
+        local plan = Ghost.plan[comp]
+        if Util.valid(comp) and type(plan) == "table" then
+            if plan.skel == true then
+                -- 骨骼网格: 一个组件就是一件 ⇒ 直接显示/隐藏
+                local hide = false
+                local it = plan.items[1]
+                if it ~= nil and Ghost.skip ~= nil
+                    and Ghost.skip[it.idx] == true then
+                    hide = true
+                end
+                pcall(function() comp:SetVisibility(not hide, true) end)
+                pcall(function() comp:SetHiddenInGame(hide, true) end)
+                n_comp = n_comp + 1
+            else
+                pcall(function() comp:ClearInstances() end)
+                if Ghost.comp_mesh ~= nil and Ghost.comp_mesh[comp] ~= nil then
+                    Ghost.comp_mesh[comp].n = 0
+                end
+                local items = plan.items
+                for j = 1, #items do
+                    local entry = items[j]
+                    if not (Ghost.skip ~= nil and Ghost.skip[entry.idx] == true) then
+                        local tf
+                        if plan.world == true then
+                            tf = Util.transform_at(
+                                (Ghost.last_place and Ghost.last_place.x or 0.0)
+                                    + entry.rx,
+                                (Ghost.last_place and Ghost.last_place.y or 0.0)
+                                    + entry.ry,
+                                (Ghost.last_place and Ghost.last_place.z or 0.0)
+                                    + entry.rz,
+                                (Ghost.last_place and Ghost.last_place.yaw or 0.0)
+                                    + entry.yaw)
+                        else
+                            tf = Util.transform_at(entry.rx, entry.ry,
+                                entry.rz, entry.yaw)
+                        end
+                        local okAdd = false
+                        pcall(function()
+                            if plan.world == true then
+                                comp:AddInstanceWorldSpace(tf)
+                            else
+                                comp:AddInstance(tf, false)
+                            end
+                            okAdd = true
+                        end)
+                        if okAdd then
+                            n_inst = n_inst + 1
+                            if Ghost.comp_mesh ~= nil
+                                and Ghost.comp_mesh[comp] ~= nil then
+                                Ghost.comp_mesh[comp].n =
+                                    Ghost.comp_mesh[comp].n + 1
+                            end
+                        end
+                    end
+                end
+                -- 组件变空时别留着（空 ISM 不画东西，但保持一致的隐藏状态）
+                local left = Ghost.comp_mesh and Ghost.comp_mesh[comp]
+                if left == nil or (left.n or 0) == 0 then
+                    pcall(function() comp:SetVisibility(false, true) end)
+                    pcall(function() comp:SetHiddenInGame(true, true) end)
+                end
+                n_comp = n_comp + 1
+            end
+        end
+    end
+    if Log ~= nil then
+        Log.line(string.format(
+            "  [placed] 增量重灌: %d 个组件 / %d 个实例（只动受影响的组，不重灌整个投影）",
+            n_comp, n_inst))
+    end
+    return n_comp
+end
+
 --- 把"放置变换"写到所有组件上
-function Ghost.apply_transform(place)
-    -- ★★ 这里**不再**做"世界标记"检查 —— 2026-09-28 实测（玩家日志）:
+function Ghost.apply_transform(place)    -- ★★ 这里**不再**做"世界标记"检查 —— 2026-09-28 实测（玩家日志）:
     --   标记每次调用都在变（`AActor: ...FAF8 -> ...5758`），于是这一步被**误跳过**，
     --   投影的 374 件实例全部留在宿主原点上 ⇒ 玩家看到"放了但什么都没有"。
     --   跨世界的清理**只由 LoadMapPre 钩子负责**（日志证明它每次都正确触发）。
@@ -998,13 +1159,19 @@ end
 function Ghost.clear()
     -- 同上: 不做世界标记检查。换世界后的清理由 LoadMapPre 钩子丢引用完成
     -- （那时这些对象已经随旧世界销毁，也没什么可清的）。
+    Ghost.skip = nil        -- "已放上的不渲染"名单: 下次重灌前重新算
+    -- ★ 配方也必须一起失效（否则"清空之后又收到一次 rehide"会去碰已销毁的组件）
+    Ghost.plan = {}
+    Ghost.rec_plan = {}
+    Ghost.last_place = nil
     clear_instances()
     destroy_host()
     Ghost.mesh_assets = {}
     Ghost.skel_list = {}
     Ghost.skel_mesh = {}
     Ghost.stats = { components = 0, failed_components = 0, instances = 0,
-                skipped_no_mesh = 0, material_ok = 0, material_fail = 0,
+                skipped_no_mesh = 0, skipped_placed = 0,
+                material_ok = 0, material_fail = 0,
                 material_missing = 0, material_original = 0,
                 material_readback = nil, skeletal_components = 0 }
     return true
@@ -1017,6 +1184,9 @@ function Ghost.forget(reason)
     Ghost.host = nil
     Ghost.root = nil
     Ghost.components = {}
+    Ghost.plan = {}
+    Ghost.rec_plan = {}
+    Ghost.last_place = nil
     Ghost.skel_list = {}
     Ghost.skel_mesh = {}
     Ghost.comp_mesh = {}
@@ -1066,10 +1236,10 @@ function Ghost.describe()
         mat = "有"
     end
     return string.format(
-        "投影: 宿主=%s 组件=%d(失败 %d) 实例=%d 缺网格=%d 材质[%s]=%s(成功 %d/失败 %d/缺 %d) 模式=%s",
+        "投影: 宿主=%s 组件=%d(失败 %d) 实例=%d 缺网格=%d 已放上不画=%d 材质[%s]=%s(成功 %d/失败 %d/缺 %d) 模式=%s",
         Util.valid(Ghost.host) and "有" or "无",
         s.components, s.failed_components or 0, s.instances,
-        s.skipped_no_mesh, tostring(Ghost.material_mode), mat,
+        s.skipped_no_mesh, s.skipped_placed or 0, tostring(Ghost.material_mode), mat,
         s.material_ok or 0, s.material_fail or 0, s.material_missing or 0,
         tostring(Ghost.instance_mode))
 end
