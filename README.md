@@ -1,97 +1,126 @@
-# Palworld 蓝图投影模组
+# PWProjection —— Palworld 蓝图投影模组
 
-> ## 📌 新会话从这里开始
->
-> **要把工作交给全新的 AI 会话？** 直接把
-> **[docs/新会话提示词.md](docs/新会话提示词.md)** 整段复制给它即可。
->
-> 自己读的话，按这个顺序：
->
-> | 顺序 | 文件 | 作用 |
-> |---|---|---|
-> | 1 | **[docs/交接笔记.md](docs/交接笔记.md)** | **最该先读**：做到哪、下一步、未确认的点、文件清单 |
-> | 2 | [docs/项目状态与路线图.md](docs/项目状态与路线图.md) | 目标、技术选型、进度、完整路线图、风险清单 |
-> | 3 | [docs/踩坑记录.md](docs/踩坑记录.md) | **26 节实测结论与坑**（最重要的一份，46KB） |
-> | 4 | [docs/蓝图格式.md](docs/蓝图格式.md) | 蓝图格式规范 v1 |
-> | 5 | [tools/README.md](tools/README.md) | 工具用法 |
->
-> **开工前先跑环境诊断**（5 秒）：
-> ```
-> powershell -ExecutionPolicy Bypass -File diag\diag-ue4ss.ps1
-> ```
->
-> **进度**：阶段 0（侦察）✅ · 阶段 1（蓝图格式+工具链）✅ ·
-> **阶段 2（自研 mod）✅ 代码完成，等实机验证** ——
-> `mod/PWProjection/` 已写好 14 个 Lua 模块，静态检查全绿（含 10 项 linter 自检）。
-> **下一步：部署 → 按 N 跑能力探测 → 把 `pwpr.log` 发回来。**
->
-> ⚠️ 已决定**自己写、不复用 Simple Building Blueprints 的代码**
-> （SBB 只作架构参考），理由见 [docs/改造SBB可行性评估.md](docs/改造SBB可行性评估.md)。
+把你在游戏里盖好的基地**采集**成蓝图，之后在**任何存档**里把蓝图**投影**出来（半透明的蓝色轮廓），
+照着它一块一块盖回去；**放下建筑的那一刻会自动吸附到投影对应的位置上**，
+放好的那一件还会立刻从投影里消失（不再和实物重合闪烁）。
+
+风格上对标 Minecraft 的 Litematica（投影/蓝图），但完全按 Palworld 的建造系统来设计。
+
+> **当前推荐版本**: `backups\2026-09-29_建造吸附可用版`（含 SHA256 校验清单与快照说明）
+> **构建标记**: 写在日志第一行、`F7` 里也能看到 —— 部署后先核对它，能立刻确认"跑的是哪一版"
 
 ---
 
-## 目录结构
+## 功能一览
 
-```
-palworld-litematica/
-├─ docs/                      文档（先读交接笔记）
-│  ├─ 交接笔记.md             ← 新会话从这里开始
-│  ├─ 项目状态与路线图.md
-│  ├─ 踩坑记录.md             ← 26 节实测结论
-│  └─ 蓝图格式.md
-├─ tools/                     纯 Python 工具链（不依赖游戏）
-│  ├─ blueprint.py            蓝图生成/校验/统计/筛选
-│  ├─ selftest.py             自检 39 项断言
-│  ├─ luacheck.py             ← Lua 静态检查（真词法器 + 块平衡）
-│  ├─ luacheck_selftest.py    ← 验证 luacheck 真能抓到会崩游戏的写法（10/10）
-│  ├─ cleanup.ps1             从游戏里清掉旧 mod
-│  └─ README.md
-├─ mod/PWProjection/            ★ 当前主线：蓝图投影 mod
-│  ├─ Scripts/*.lua           14 个模块（含 pwpr_probe / pwpr_ghost）
-│  ├─ deploy.ps1              一键部署（幂等，会顺手清理废弃 mod）
-│  └─ README.md               ← 用法、按键、配置、安全设计
-├─ mod/PWRecon/                （已退役，保留供追溯）
-├─ diag/                      环境诊断
-│  ├─ diag-ue4ss.ps1          ← 开工前先跑这个
-│  └─ 修复说明.md
-├─ data/                      从游戏导出的原始数据
-│  ├─ recon_alltypes.txt      79 种类型清单（mesh 映射表基础）
-│  ├─ buildings_raw.tsv       主基地 358 建筑
-│  └─ buildings_raw_base2.tsv 第二据点 35 建筑
-├─ out/                       生成的蓝图
-└─ archive/                   已过时的工具（保留供追溯）
-```
-
-> 关于 SBB：`SimpleBuildingBlueprints 4073 .../` 是用户下载的第三方 mod，
-> **只用于阅读架构**（分析结论见 [docs/SBB架构分析.md](docs/SBB架构分析.md) 和
-> [docs/改造SBB可行性评估.md](docs/改造SBB可行性评估.md)），**代码不复用、不分发**。
-
----
-
-## 这个项目在做什么
-
-给 Palworld 做一个 **Litematica 式的建筑投影模组**：
-把建筑蓝图以半透明形式投影到世界里，方便照着摆放方块。
-
-| 功能 | 状态 |
+| 功能 | 怎么用 |
 |---|---|
-| 添加/导出蓝图 | ✅ 已实现（**游戏内直接导出 JSON**，`mod/PWProjection` 按 Y/U） |
-| 加载蓝图 | ✅ 已实现（蓝图库 + `J` 循环切换） |
-| 半透明投影 | ✅ **代码完成**（`pwpr_ghost.lua`，受能力探测门禁保护） |
-| 移动投影 | ✅ **代码完成**（小键盘前后左右/上下/旋转，见 mod README） |
-| 分层展示 | ✅ **代码完成**（`L` 键循环，这是 SBB 没有的功能） |
-| 自动建造 | ❌ 明确不做（那是 SBB 的功能，本 mod 只做投影） |
+| **采集基地** | 站进基地按 `Y`（范围由 `capture_radius_m` 决定，`0` = 采集全部） |
+| **蓝图文件** | 存在 `Mods\NativeMods\UE4SS\Mods\PWProjection\blueprints\*.json`，纯文本、可备份/分享 |
+| **加载 / 切换蓝图** | 按 `J`（多张蓝图时循环切换） |
+| **放出投影 / 收起** | 按 `K` |
+| **建造吸附**（★ 核心） | **不用按键**：加载蓝图 + 放出投影 → 进建造模式正常摆 → 放下时自动落到投影位置上 |
+| **已放上的不再渲染** | 自动：放下去的那一件立刻从投影里消失（避免和实物重合闪烁） |
+| 投影微调 / 归零 | 方向键平移、`H` 把偏移归零；旋转等键见 `F7` 里的表 |
+| 换层显示 | 按 `L` |
+| 状态与帮助 | 按 `F7`（会把当前配置、按键表、运行状态写进日志） |
+| 即时重载配置 | 按 `F8` |
+| 能力探测（首次必做） | 按 `N` |
 
-**技术路线**：UE4SS + Lua（不用 PMK/C++），因为 Lua 是纯文本、AI 可参与开发，
-且游戏内已有可参考的先例（FirstPerson mod、Simple Building Blueprints）。
+键位按 **84 配列（没有小键盘）** 的键盘设计：主键全在字母区，小键盘只当"有的话也能按"的别名。
 
 ---
 
-## 历史说明（已过时，保留供追溯）
+## 环境要求
 
-> 早期尝试过"离线解析存档"这条路：实测 1.0 存档头部是 `PlM1`（**Oodle 压缩**，
-> 不是 zlib），且地图对象换成了带 pickup guard 的新格式，链路太长太脆。
-> **已放弃，改为 UE4SS 读运行时内存。**
->
-> 相关工具已移到 `archive/`。
+* **Palworld 1.0.x**（UE 5.1 Shipping）
+* **UE4SS** `experimental-palworld` v3.0.1 Beta #0（装在 `Palworld\Mods\NativeMods\UE4SS\`）
+* Windows + PowerShell（部署脚本用；手动复制文件则不需要）
 
+## 安装
+
+```powershell
+# 1) 把 mod 装进游戏（脚本会复制文件并注册 mods.txt）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\mod\PWProjection\deploy.ps1
+
+# 2) 进游戏: 先按 N 做一次能力探测（通过后会自动打开投影开关并写进配置）
+#    再按 J 加载蓝图、按 K 放投影
+
+# 3) 改过 Lua 之后必须**重启游戏**（只有配置改动可以按 F8 即时重载）
+```
+
+配置与日志都在 `Mods\NativeMods\UE4SS\Mods\PWProjection\Scripts\`：
+
+| 文件 | 说明 |
+|---|---|
+| `pwpr_config.json` | 配置（只写"和默认值不同"的键；键要写在**同一个 `{}`** 里） |
+| `pwpr.log` | 运行日志（排查问题把这份发出来即可） |
+
+---
+
+## 建造吸附是怎么工作的（以及为什么它只影响"放下那一刻"）
+
+* 游戏那个**半透明预览**是引擎内部的，Lua **读不到也改不了** ⇒ **预览不会跟着吸**，
+  只有**真正放下去的那一件**会精确落位；
+* 做法是在"客户端发出放置请求"这一环拦截：把这次请求**拦下**，再按投影的坐标**重发一次**；
+* 差得比 `buildsnap_min_cm`（默认 **5 厘米**）还准时**完全不插手** —— 省开销、也少一次改写风险；
+* 类型名对不上（游戏叫 `Wooden_foundation`、蓝图里是 `Wood_Foundation`）时会**自动学到映射**，
+  日志里会打 `★ 学到映射`；
+* 任何一步不满足条件（太白、太远、拦不住、重发失败）都**原样放行** —— 宁可没吸上，也绝不改错。
+
+## 已知限制（细节见 `mod\PWProjection\已知限制.md`）
+
+* **预览不会跟着吸**；只有放下那一刻生效；
+* **多件拼装建筑只画主件近似**（伐木场、采石场等），完整拼装待做；
+* **`blueprint` 模式未完成 / 暂不可用**（配置里设了会告警）⇒ 请用默认的 `align`；
+* **拆掉的建筑不会自动恢复投影** —— 那条自动扫描会读到引擎里"已销毁但还没清掉"的对象，
+  实测**崩过游戏**，所以默认关闭 ⇒ 拆完按 `K` 收起再放一次即可；
+* **联机（多人）未验证**。
+
+## 常见问题
+
+| 现象 | 怎么办 |
+|---|---|
+| 按 `K` 没反应 / 提示"投影没解锁" | 先按 `N` 做能力探测（通过后会自己打开开关）；或检查配置里的 `ghost_enabled` |
+| 改了配置没生效 | 键必须写在**同一个 `{}`** 内；改完按 `F8` |
+| 建筑放下时没吸上 | 看日志里的 `[bsnap]` 那几行：太远 / 类型没对上 / 被门槛放过 / 游戏拒绝了，都会写明原因 |
+| 投影和实物交替闪 | 放好的那一件本应立刻消失；若还在闪，按 `F7` 看"已放上的不渲染"状态，必要时调 `ghost_hide_placed_cm` |
+| 想确认版本 | 看日志第一行 `构建标记:` —— 和你要的版本不一致就是部署没生效 |
+
+---
+
+## 开发者部分
+
+```powershell
+# 静态检查（改完 Lua 必须全绿）
+python tools\luacheck.py mod\PWProjection\Scripts     # 18 个文件 0 问题
+python tools\luacheck_selftest.py                     # 25/25
+python tools\selftest.py                              # 39/39
+python tools\check_config_doc.py                      # 每个配置键都要有文档
+python tools\check_meshmap.py mod\PWProjection\Scripts
+python tools\check_bom.py                             # 所有 .ps1 必须 UTF-8 with BOM
+python tools\snap_sim.py                              # 投影对齐算法（8/8）
+python tools\buildsnap_sim.py                         # 建造吸附算法 + 实测回归 + 两道守卫
+python tools\secret_scan.py                           # 提交前的凭据/隐私审计
+```
+
+| 目录 | 内容 |
+|---|---|
+| `mod\PWProjection\` | mod 本体（Lua，18 个模块）+ 部署脚本 + 已知限制 |
+| `docs\` | 全部文档 —— **先读 [`docs\交接笔记.md`](docs/交接笔记.md)**，再读 [`docs\建造吸附.md`](docs/建造吸附.md) |
+| `docs\踩坑记录.md` | 本项目最值钱的一份：几十条实测结论（含两次崩溃的根因） |
+| `tools\` | 蓝图工具 + 上面那些检查器（纯 Python，不需要 Lua 解释器） |
+| `backups\` | 各里程碑快照（zip + SHA256 校验清单 + 说明） |
+| `data\` `out\` `archive\` | 原始导出数据 / 生成的蓝图 / 已退役工具（保留供追溯） |
+
+> 想把项目交给新的 AI 会话继续做？把 [`docs\新会话提示词.md`](docs\新会话提示词.md) 整段复制给它即可。
+
+## 致谢与参考
+
+* **UE4SS** 提供了 Lua 侧的能力；
+* 架构思路上参考了 **Simple Building Blueprints (SBB)** 的公开做法 —— **只读参考、
+  未复用其代码/字符串**（见 [`docs\改造SBB可行性评估.md`](docs/改造SBB可行性评估.md)）。
+
+## 许可证
+
+**尚未选定** —— 上传前需要决定（例如 MIT / AGPL-3.0），并一并确认参考模组的授权情况。
