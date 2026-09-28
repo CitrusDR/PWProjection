@@ -84,7 +84,12 @@ local CONFIG_VERSION = 8
 local DEFAULTS = {
     config_version     = CONFIG_VERSION,
     -- ---- 采集 ----
-    capture_radius_m   = 150,     -- 按 Y 采集"玩家附近"的半径（米）
+    -- 采集键只有一个（`Y`），"附近 / 全部"由这个值决定:
+    --   > 0 = 只采集玩家周围这个半径（米）内的建筑（默认 150 米，基地够用）
+    --   = 0 = **采集全部建筑**（整个存档一张蓝图，会慢、蓝图会很大）
+    -- ★ 2026-09-29 玩家要求: "我之前采集的时候看你提示是说 Y 或 U，
+    --   保留一个采集键就好了" ⇒ 原来的 `U`（采集全部）已去掉，改成这里配。
+    capture_radius_m   = 150,
     capture_max        = 6000,    -- 单次采集上限，防止把整个存档一次抓爆
     layer_gap_cm       = 200,     -- 层聚类阈值：相邻 Z 差超过它就分新层
     origin_snap_m      = 1.0,     -- 蓝图原点吸附到多少米的网格
@@ -114,13 +119,20 @@ local DEFAULTS = {
     rotate_step_deg    = 15,      -- 一次转多少度
     height_step_cm     = 100,
 
-    -- ---- 建筑吸附（按 NUM 7 / F5: 把投影一步对齐到原建筑的实际位置）----
+    -- ---- 建筑吸附（把投影一步对齐到原建筑的实际位置）----
     -- 做什么、怎么算、日志怎么看: 见 pwpr_snap.lua 文件头 + docs\配置说明.md
     --   「建筑吸附」一节。原则: **只改投影偏移，不动蓝图数据**。
     --
     -- 总开关。默认开（这个功能是"只读+算偏移"，不创建任何引擎对象，
     --   和投影渲染不是一回事；出问题时先关它排查）。
     snap_enabled     = true,
+    -- ★ 放下投影（按 K）时**自动对齐一次**。默认开。
+    --   玩家 2026-09-29 明确要求: "我预期应该是在准备放置的时候吸附上去"
+    --   —— 所以放下那一刻就对齐，而不是再按一个键。
+    --   ★ 关掉它 = 回到"放下时在玩家脚下，想对齐再按吸附键"的老行为。
+    --   （不会在"挪投影"时自动吸: 那会和手动微调打架，而且方向键按住时
+    --     一秒触发十几次，每次都读几千个 actor —— 卡顿且无法精调。）
+    snap_on_place    = true,
     -- 【最常需要调的】配对阈值（厘米）: 投影里的一件与原建筑差多远以内，
     --   才认为"这俩可能是同一件"。
     --   ★ 经验关系: 投影刚放出来时原点是"玩家脚下"，所以**你站得离基地中心
@@ -137,12 +149,20 @@ local DEFAULTS = {
     -- 吸附时是否**同时自动找朝向**（true 会用"参照朝向 - 记录朝向"投票）。
     --   false = 只平移、保持你当前转到的朝向（你已经在用 +/- 精调朝向时用）。
     snap_yaw_search  = true,
-    -- 吸附键。默认小键盘 7（`NUM_SEVEN` 是本 UE4SS 版本 `Key` 表里的名字）。
-    --   没有小键盘的键盘（84 配 / 75% / 笔记本）改成别的键名再**重启游戏**——
-    --   键位是启动时注册的，`F8` 重载配置不会重绑。
-    --   写法参考代码里其他绑定: `F7` / `NUM_EIGHT` / `ADD` / `UP_ARROW` / `G`。
-    --   不确定的名字也可以填，启动日志会写 "BIND FAILED"，并且会自动退回备用键 G。
-    snap_key         = "NUM_SEVEN",
+    -- 吸附键。默认 `"U"`。**用字母键而不是小键盘**，因为:
+    --   ① 玩家自己的键盘是 **84 配列（没有小键盘）**，2026-09-29 明确说过；
+    --   ② 本项目里 `Y U H J K L` 是**实测未被游戏占用**的那批键，
+    --      而 `U` 原来是"采集：全部建筑"，已合并进 `Y`（见 capture_radius_m）⇒ 空出来了。
+    -- 想换成别的键: 填 UE4SS `Key` 表里的名字（写法参考代码里其他绑定:
+    --   `F7` / `NUM_SEVEN` / `ADD` / `UP_ARROW` / `G`），**改完要重启游戏**
+    --   （键位只在启动时注册，`F8` 重载配置不重绑）。
+    --   名字写错时启动日志会写 "BIND FAILED"，此时会自动退回备用键（见 main.lua）。
+    -- ★ 另: 有小键盘的人**额外**还能按小键盘 7（代码里会自动加这个别名，不影响这里）。
+    --
+    -- ★ 关于"改了默认值要迁移"（见文件头规矩 1）:
+    --   这里从 `NUM_SEVEN` 改成 `U` **不需要迁移** —— 该键是同一轮开发里加的，
+    --   从没随版本部署过，任何玩家的 `pwpr_config.json` 里都不可能有它（已核对）。
+    snap_key         = "U",
 
     -- ---- 投影外观/位置 ----
     -- 投影材质。循环里保留 4 档（游戏里 F9 进 material 模式，←/→ 切换）：
@@ -494,7 +514,7 @@ Config.KEY_GROUP = {
     ghost_enabled = 1, ghost_max_instances = 1, ghost_material = 1,
     player_feet_offset_cm = 1,
     nudge_step_cm = 1, rotate_step_deg = 1,
-    snap_enabled = 1, snap_radius_cm = 1, snap_verify_cm = 1,
+    snap_enabled = 1, snap_on_place = 1, snap_radius_cm = 1, snap_verify_cm = 1,
     snap_min_matches = 1, snap_yaw_search = 1, snap_key = 1,
     hud_enabled = 1, hud_seconds = 1, notify_channel = 1, notify_min_interval = 1,
     notify_try_notice_text = 1, notify_own_widget = 1, notify_widget_class_path = 1,

@@ -51,12 +51,13 @@ Notify.last_t = nil
 Notify.KEYS = {
     { group = "main",   key = "F7",  cn = "帮助 / 当前状态",        en = "help / status" },
     { group = "main",   key = "F8",  cn = "重载 pwpr_config.json",  en = "reload config" },
-    { group = "main",   key = "Y",   cn = "采集: 玩家附近",          en = "capture: near" },
-    { group = "main",   key = "U",   cn = "采集: 全部建筑",          en = "capture: all" },
+    { group = "main",   key = "Y",   cn = "采集（半径见 capture_radius_m；设 0 = 采全部）", en = "capture" },
     { group = "main",   key = "J",   cn = "蓝图库: 下一张并加载",    en = "library: next" },
-    { group = "main",   key = "K",   cn = "投影: 放 / 收",           en = "ghost: show/hide" },
+    { group = "main",   key = "K",   cn = "投影: 放 / 收（放下时自动对齐）", en = "ghost: show/hide" },
     { group = "main",   key = "L",   cn = "投影: 切分层",            en = "ghost: cycle layer" },
-    { group = "main",   key = "H",   cn = "投影: 重新吸附到玩家",    en = "ghost: re-snap" },
+    { group = "main",   key = "U",   cn = "★ 投影: 对齐到附近原建筑（= 建筑吸附）",
+                                                                     en = "snap to nearby buildings" },
+    { group = "main",   key = "H",   cn = "投影: 重新定位到你脚下",   en = "ghost: move to player" },
     { group = "main",   key = "N",   cn = "渲染能力探测（S3）",      en = "capability probe" },
     { group = "main",   key = "O",   cn = "屏幕提示通道探测（S9）",  en = "notify probe" },
 
@@ -67,9 +68,10 @@ Notify.KEYS = {
     { group = "numpad", key = "NUM 4/6", cn = "左 / 右",             en = "left / right" },
     { group = "numpad", key = "NUM 9/3", cn = "上 / 下",             en = "up / down" },
     { group = "numpad", key = "+ / -",   cn = "逆 / 顺时针旋转",     en = "rotate" },
-    { group = "numpad", key = "NUM 5",   cn = "清掉偏移与旋转",      en = "reset offset" },
-    { group = "numpad", key = "NUM 7",   cn = "★ 建筑吸附: 对齐到附近原建筑（键名可在配置 snap_key 改）",
-                                                                     en = "snap to nearby buildings" },
+    { group = "numpad", key = "NUM 5",   cn = "清掉偏移与旋转（= 主键 H，没有小键盘用 H）",
+                                                                     en = "reset offset (= H)" },
+    { group = "numpad", key = "NUM 7",   cn = "建筑吸附（= 主键 U，没有小键盘就用 U）",
+                                                                     en = "snap (same as U)" },
     { group = "numpad", key = "NUM 0",   cn = "换微调步长",          en = "cycle step" },
     { group = "numpad", key = "NUM 1",   cn = "★ 紧急收回屏幕提示控件", en = "drop notify widget" },
     { group = "numpad", key = "*",       cn = "换投影材质",          en = "cycle material" },
@@ -137,6 +139,17 @@ function Notify.resend()
     if Notify.last_text == nil then return false end
     Notify.last_t = nil
     return Notify.show(Notify.last_text)
+end
+
+--- 强制发一条（忽略节流窗口）。
+---
+--- ★ 什么时候用: "这次操作的结果**必须**让玩家看到"，而它前面刚刚发过一条别的
+---   （例: 放下投影先报"已放置"，紧接着吸附完成要报"对上 N/M 件"）。
+---   两条落在同一个 0.25 秒窗口里时，后来的那条本来会被丢掉，
+---   而"对上多少件"恰恰是玩家最需要看的那一句。
+function Notify.show_force(cn, en, kind)
+    Notify.last_t = nil
+    return Notify.show(cn, en, kind)
 end
 
 --- 状态（多行）: 提示层 + 通道层

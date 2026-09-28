@@ -31,14 +31,19 @@
   ============================================================================
 
     F7   帮助 / 当前状态（含完整按键表）
-    Y    采集：玩家附近（半径见 config capture_radius_m）
-    U    采集：全部建筑
+    Y    采集（半径见 config capture_radius_m；设成 0 = 采集全部建筑）
+    U    投影：对齐到附近的真实建筑（建筑吸附；放下投影时也会自动吸一次）
     J    蓝图库：切到下一张并加载
-    K    投影：放 / 收   （收 = 彻底销毁宿主，不留残留对象）
+    K    投影：放 / 收   （收 = 彻底销毁宿主，不留残留对象；放下时会自动对齐）
     L    投影：切分层    （全部层 -> 第 0 层 -> 第 1 层 -> ... -> 全部层）
-    H    投影：重新吸附到玩家当前位置（清掉偏移）
+    H    投影：重新定位到你脚下（清掉偏移与旋转）
     N    渲染能力探测（S3）—— 第一次用投影前必须先跑这个
     O    屏幕提示通道探测（S9）—— 查"能不能在游戏里显示文字"
+
+  ★ 2026-09-29 键位调整（都以玩家自己的键盘为准 —— **84 配列，没有小键盘**）:
+    · 采集合并成**一个**键（原来 Y=附近 / U=全部两个键）；
+    · 新增的吸附功能**不放在小键盘上**（84 配列按不到），用空出来的 U；
+      有小键盘的人额外还能按小键盘 7（代码自动加别名）。
 
   屏幕提示: 每次操作后给一行中文提示，走 pwpr_notify（策略）+ pwpr_hud（通道）。
     兜底通道是控制台 print（零风险）；游戏内通道要先跑 O 探测并用配置显式打开。
@@ -427,6 +432,22 @@ end
 -- S2 蓝图库
 -- ---------------------------------------------------------------------------
 
+--- `Y` 的实际回调: 采集。半径由 `capture_radius_m` 决定。
+---
+--- ★ 2026-09-29 玩家要求合并成**一个采集键**:
+---   原话「我之前采集的时候看你提示是说 Y 或 U，保留一个采集键就好了」——
+---   以前是 `Y` = 玩家附近、`U` = 全部建筑两个键；现在只留 `Y`，
+---   想采全部就把 `capture_radius_m` 设成 `0`（详见配置说明）。
+---   顺带把空出来的 `U` 给了"建筑吸附"（它需要一个小键盘之外、实测空闲的键）。
+local function do_capture_key()
+    local r = tonumber(Config.get("capture_radius_m")) or 150
+    if r <= 0 then
+        do_capture("all")
+    else
+        do_capture("sphere")
+    end
+end
+
 local function do_library_next()
     Log.clear()
     Log.section("蓝图库")
@@ -434,8 +455,8 @@ local function do_library_next()
     local n, note = Library.refresh()
     Log.emit(string.format("库: %d 张    %s", n, tostring(note)))
     if n == 0 then
-        Log.emit("库是空的。先按 Y 或 U 采集一个基地。")
-        Notify.show("蓝图库是空的 —— 先按 Y 或 U 采集一个基地", "library empty", "error")
+        Log.emit("库是空的。先按 Y 采集一个基地。")
+        Notify.show("蓝图库是空的 —— 先按 Y 采集一个基地", "library empty", "error")
         flush_log()
         return
     end
@@ -667,8 +688,8 @@ local function do_ghost_toggle()
     end
 
     if not Session.active or Session.bp == nil then
-        Log.emit("!! 还没有加载蓝图。先按 Y/U 采集，再按 J 加载。")
-        Notify.show("还没有加载蓝图: 先按 Y 或 U 采集，再按 J 加载", "no blueprint loaded", "error")
+        Log.emit("!! 还没有加载蓝图。先按 Y 采集，再按 J 加载。")
+        Notify.show("还没有加载蓝图: 先按 Y 采集，再按 J 加载", "no blueprint loaded", "error")
         flush_log()
         return
     end
@@ -740,16 +761,18 @@ local function do_ghost_toggle()
                 Log.emit(string.format("    …还有 %d 种类型也缺", #arr - 10))
             end
         end
-        Log.emit("  按 Y 或 U 重新采集一次，会同时导出 pwpr_meshes.txt")
+        Log.emit("  按 Y 重新采集一次，会同时导出 pwpr_meshes.txt")
         Log.emit("  （里面是真实的网格资产名，可据此补 pwpr_meshmap.json）")
     end
     Log.emit("")
-    Log.emit("微调: 小键盘 8/2 前后  4/6 左右  9/3 上下  +/- 旋转  5 复位  0 换步长")
-    Log.emit("分层: L      重新吸附: H      收起: 再按 K")
+    Log.emit("微调: 方向键（F9 切 移动/旋转/材质）  小键盘 8/2 4/6 9/3 挪  +/- 旋转  5 复位  0 换步长")
+    Log.emit("分层: L      对齐到原建筑: U（放下时已自动吸）      重新定位到脚下: H      收起: 再按 K")
 
-    -- ★ 屏幕提示: 放置成功给一行"多少件、什么材质"
+    -- ★ 屏幕提示: 放下投影先立刻给一行（别让玩家在自动对齐那一两秒里干等），
+    --   吸附完成后**再发一行**（用 show_force 忽略节流 —— 见下面的包装函数）。
     Notify.show(string.format("投影已放置: %d 件   材质 %s",
-        Ghost.stats.instances or 0, tostring(MATERIAL_CN[Ghost.material_mode] or Ghost.material_mode)),
+        Ghost.stats.instances or 0,
+        tostring(MATERIAL_CN[Ghost.material_mode] or Ghost.material_mode)),
         string.format("ghost placed: %d instances", Ghost.stats.instances or 0))
     flush_log()
 end
@@ -802,49 +825,54 @@ local function do_resnap()
 end
 
 -- ---------------------------------------------------------------------------
--- 建筑吸附（路线图"待办 2"）—— 默认小键盘 7，键名可用配置 snap_key 改
+-- 建筑吸附（路线图"待办 2"）—— 放下投影时**自动吸**，另有一个手动键
 --
--- ★ 为什么做成"按键触发"而不是"自动吸附":
---   ① 自动吸附会和手动微调打架（你每挪一格它就把你吸回去，反而没法精调）；
---   ② 算一次要读几千个 actor 的位置（几百毫秒），不适合每帧做。
---   所以: 想对齐就按一下 —— 算完给一行反馈（对上多少件 / 移动了多少）。
+-- ★ 为什么是"放下时就吸"（玩家 2026-09-29 明确要求）:
+--   原话: "我预期应该是在准备放置的时候吸附上去。"
+--   ⇒ 按 K 把投影放下的那一刻就对齐到原建筑，不用再按一个键。
+--   ⇒ 手动键（默认 `U`）留给"后来挪过、想再对齐一次"的情况。
+--
+-- ★ 为什么**不**在"挪投影"时自动吸:
+--   ① 方向键/小键盘是**按键重复速率**触发的，按住一秒能来十几次，
+--      而吸一次要读几千个 actor 的位置 ⇒ 每按一下卡一下，根本没法精调；
+--   ② 它会和手动微调**互相打架**（你刚挪开一格就被吸回去）。
+--   对齐之后偏移会一直保留（走动不影响投影），所以"调好再微调"是安全的。
 --
 -- ★ 与 H 的区别（两个"吸附"很容易混）:
 --   H（resnap） = 把投影**挪到你脚下**，偏移清零（定位用）
---   NUM 7      = 把投影**对齐到附近的真实建筑**（对齐用，改偏移和朝向）
+--   U/自动吸   = 把投影**对齐到附近的真实建筑**（对齐用，改偏移和朝向）
 -- ---------------------------------------------------------------------------
 
-local function do_snap()
-    Log.clear()
-    Log.section("建筑吸附")
-
+--- 求解 + 应用 + 汇报一次吸附。
+--- quiet = true: 自动吸附用 —— 失败只写日志（在空地上放投影吸不了很正常，
+---              不该弹一个红色错误把玩家吓一跳）。
+--- 返回 是否成功（boolean）
+local function snap_run(quiet)
+    -- ---- 前置条件（不满足不是"错误"，只是这次不吸）----------------------
+    local skip = nil
     if Config.get("snap_enabled") ~= true then
-        Log.emit("!! 建筑吸附已被配置关闭（snap_enabled = false）。")
-        Notify.show("建筑吸附已关闭: snap_enabled = false",
-            "snap disabled in config", "error")
-        flush_log()
-        return
+        skip = "吸附已在配置里关闭（snap_enabled = false）"
+    elseif not Session.active or Session.bp == nil then
+        skip = "还没有加载蓝图"
+    elseif not Ghost.visible then
+        skip = "投影是收起的"
     end
-
-    if not Session.active or Session.bp == nil then
-        Log.emit("!! 还没有加载蓝图。先按 Y/U 采集，再按 J 加载。")
-        Notify.show("还没有加载蓝图（先按 J）", "no blueprint loaded", "error")
-        flush_log()
-        return
-    end
-    if not Ghost.visible then
-        Log.emit("!! 投影是收起的。按 K 放出来再吸附（看着投影吸最直观）。")
-        Notify.show("投影是收起的: 先按 K 放出来", "ghost hidden: press K first", "error")
-        flush_log()
-        return
+    if skip ~= nil then
+        Log.emit("!! 吸附跳过: " .. skip)
+        if not quiet then
+            Notify.show("吸附跳过: " .. skip, "snap skipped", "error")
+        end
+        return false
     end
 
     local place0 = Session.place()
     if place0 == nil then
         Log.emit("!! 拿不到玩家位置，无法计算吸附。")
-        Notify.show("拿不到你的位置，无法吸附", "cannot snap: no player position", "error")
-        flush_log()
-        return
+        if not quiet then
+            Notify.show("拿不到你的位置，无法吸附",
+                "cannot snap: no player position", "error")
+        end
+        return false
     end
 
     Log.emit(string.format("基准: 投影原点 (%.0f, %.0f, %.0f) 朝向 %.1f 度",
@@ -871,11 +899,15 @@ local function do_snap()
         Log.emit(string.format("  （用时 %.0f 毫秒；投影一动没动，偏移和朝向都没改）", ms))
         Log.emit("  可以试: ① 站到基地里更靠中心的位置再按；")
         Log.emit("          ② 把 snap_radius_cm 调大（你离基地中心越远，需要的值越大）；")
-        Log.emit("          ③ 用 +/- 把朝向转到大致对（差得太多时同类型的件配不上）；")
+        Log.emit("          ③ 用方向键/+- 把朝向转到大致对（差得太多时同类型的件配不上）；")
         Log.emit("          ④ 这张蓝图不是从这个基地采的（那就没有'原建筑'可对）。")
-        Notify.show("吸附失败: " .. tostring(err), "snap failed", "error")
-        flush_log()
-        return
+        if quiet then
+            Log.emit("  （这是放下投影时的自动对齐 —— 附近没有可对齐的原建筑，"
+                .. "投影留在你脚下，按 K 后自己挪即可）")
+        else
+            Notify.show("吸附失败: " .. tostring(err), "snap failed", "error")
+        end
+        return false
     end
 
     -- ★ 只改投影的偏移与朝向 —— **蓝图数据一个字节都不动**。
@@ -914,12 +946,41 @@ local function do_snap()
     elseif res.low_coverage then
         warn = string.format("（匹配 %.0f%%，看一眼）", (res.ratio or 0.0) * 100.0)
     end
-    Notify.show(string.format("吸附: 对上 %d/%d 件，移动 %.0f 厘米%s%s",
+    Notify.show_force(string.format("吸附: 对上 %d/%d 件，移动 %.0f 厘米%s%s",
         res.matched, res.total or res.records or 0, res.shift_cm or 0.0,
         (math.abs(res.yaw_delta or 0.0) >= 0.5)
             and string.format("，转向 %+.0f°", res.yaw_delta) or "", warn),
         string.format("snap: %d/%d matched, moved %.0f cm",
             res.matched, res.total or res.records or 0, res.shift_cm or 0.0))
+    return true
+end
+
+--- 手动吸附键（默认 `U`）
+local function do_snap()
+    Log.clear()
+    Log.section("建筑吸附（手动）")
+    snap_run(false)
+    flush_log()
+end
+
+--- `K` 的实际回调: 放下投影 → **自动对齐一次**。
+---
+--- ★ 为什么把"自动对齐"放在这个包装里，而不是塞进 do_ghost_toggle:
+---   do_ghost_toggle 定义在"建筑吸附"这一节**之前**，里面直接调 snap_run
+---   会解析成全局变量（nil）⇒ 运行时 "attempt to call a nil value"
+---   （这个坑本项目踩过，见 docs\踩坑记录.md §13）。
+---
+--- ★ 提示是**两条**: do_ghost_toggle 里先报"投影已放置"（立刻有反馈），
+---   吸附算完（要读几千个 actor，通常 1 秒上下）再由 snap_run 报
+---   "对上 N/M 件" —— 那条用 show_force 忽略节流，保证不会被前一条吃掉。
+local function do_ghost_toggle_key()
+    do_ghost_toggle()
+    if not Ghost.visible then return end      -- 这次是按了"收起"，它自己已经报过了
+    if Config.get("snap_on_place") == true then
+        Log.emit("")
+        Log.emit("—— 放下投影后的自动对齐（snap_on_place = true，可在配置里关掉）——")
+        snap_run(true)
+    end
     flush_log()
 end
 
@@ -1050,7 +1111,7 @@ local function do_help()
     -- 控制台再来一份纯 ASCII 的（中文在控制台会变成 ???）
     print(TAG .. " ---- PWPR keys ----")
     print(TAG .. " F7 help | F8 reload config")
-    print(TAG .. " Y cap-near | U cap-all | J next bp")
+    print(TAG .. " Y capture | J next bp | U snap-to-buildings")
     print(TAG .. " K ghost on/off | L layer | H resnap")
     print(TAG .. " N render-probe | O notify-probe")
     print(TAG .. " numpad 8/2 4/6 9/3 move, +/- rotate, 5 reset, 0 step")
@@ -1346,19 +1407,19 @@ try_bind("F8=reload-cfg",  "F8", {}, on_direct("reload-config", do_reload_config
 --   想手动清屏时: 把 notify_autohide 打开等它自动消失，
 --   或者需要的话再挑一个确认空闲的键来绑。
 --   （Hud.hide_now() 本身保留，将来做"键位自定义"（待办 5）时可以挂上去。）
-try_bind("Y=capture-near", "Y",  {}, on_game_thread("capture-near",
-    function() do_capture("sphere") end))
-try_bind("U=capture-all",  "U",  {}, on_game_thread("capture-all",
-    function() do_capture("all") end))
+-- ★ 采集: 只有**一个**键（`Y`）。"玩家附近 / 全部"由配置决定 ——
+--   `capture_radius_m > 0` = 附近；`= 0` = 全部建筑。
+--   （玩家 2026-09-29: "保留一个采集键就好了"。原来的 U=全部 已去掉。）
+try_bind("Y=capture", "Y",  {}, on_game_thread("capture", do_capture_key))
 try_bind("J=library-next", "J",  {}, on_direct("library-next", do_library_next))
-try_bind("K=ghost-toggle", "K",  {}, on_game_thread("ghost-toggle", do_ghost_toggle))
+try_bind("K=ghost-toggle", "K",  {}, on_game_thread("ghost-toggle", do_ghost_toggle_key))
 try_bind("L=layer-cycle",  "L",  {}, on_game_thread("layer-cycle", do_layer_cycle))
 try_bind("H=resnap",       "H",  {}, on_game_thread("resnap", do_resnap))
 try_bind("N=probe",        "N",  {}, on_game_thread("probe", do_probe))
 -- ★ O: 屏幕提示通道探测（S9）。
 --   ★ 必须走 on_game_thread: S9 要读引擎（FindAllOf / 反射 / 构造 FText）。
 --   本项目的规矩是"**只要碰引擎就走游戏线程**"，只读也一样 ——
---   按 Y/U 采集也是只读，同样走游戏线程。在非游戏线程读引擎对象
+--   按 Y 采集也是只读，同样走游戏线程。在非游戏线程读引擎对象
 --   正是早期几次崩溃的成因之一。
 try_bind("O=notify-probe", "O",  {}, on_game_thread("notify-probe", do_probe_ui))
 
@@ -1385,23 +1446,33 @@ try_bind("MUL=material", "MULTIPLY", {}, on_game_thread("material-cycle",
 -- ★ 小键盘 1: 紧急收回我们自建的提示控件（见 do_drop_notify_widget 的说明）
 try_bind("NUM_1=drop-notify", "NUM_ONE", {}, on_game_thread("drop-notify",
     do_drop_notify_widget))
--- ★ 建筑吸附键（路线图待办 2）。默认 **小键盘 7** ——
---   ① 放在小键盘里是因为"挪投影"就在这片键上，吸完还想微调时手不用离开；
---   ② 功能键全被占了（F1~F4 是 UE4SS、F5/F6 是 FirstPerson mod、F11/F12 是全屏/截图），
---      而字母键里只有 Y U H J K L 实测确认空闲。
---   ★ 键名**可配置**（snap_key）: 没有小键盘的键盘（84 配 / 75%）把 `snap_key`
---     改成 `"G"` 之类再重启游戏即可。键名就是 UE4SS `Key` 表里那个名字
---     （写法可参考本文件其他 try_bind: F7 / NUM_EIGHT / ADD / UP_ARROW）。
---   ★ 万一日志里出现 "BIND FAILED: snap=..."（键名写错/枚举里没有），
---     自动再试一个备用键 G，保证这一版里功能一定够得着。
+-- ★ 建筑吸附键（路线图待办 2）。
+--   默认 **`U`**（配置 `snap_key` 可改）——为什么是字母键而不是小键盘:
+--   ① **玩家的键盘是 84 配列（没有小键盘）**，2026-09-29 明确说过；
+--   ② `Y U H J K L` 是**实测未被游戏占用**的那批键，而 `U` 原来是"采集全部"，
+--      已并进 `Y` ⇒ 正好空出来；
+--   ③ 功能键全被占了（F1~F4 是 UE4SS、F5/F6 是 FirstPerson、F11/F12 是全屏/截图）。
+--   ★ 有小键盘的人**额外**也能按小键盘 7（下面自动加这个别名；键名不存在就跳过）。
+--   ★ 主键名写错/枚举里没有 ⇒ 启动日志会写 "BIND FAILED"，并自动退回备用键 G。
+local function key_exists(name)
+    local k = nil
+    pcall(function() k = Key[name] end)
+    return k ~= nil
+end
+
 local snap_key = Config.get("snap_key")
-if type(snap_key) ~= "string" or snap_key == "" then snap_key = "NUM_SEVEN" end
+if type(snap_key) ~= "string" or snap_key == "" then snap_key = "U" end
 do
     local ok_snap = try_bind("snap=" .. snap_key, snap_key, {},
         on_game_thread("snap", do_snap))
     if not ok_snap then
         try_bind("snap-fallback-G", "G", {}, on_game_thread("snap-g", do_snap))
         Log.emit("!! 吸附键 " .. snap_key .. " 没绑上，已改用备用键 G")
+    end
+    -- 小键盘 7 当别名（有就绑，没有就悄悄跳过 —— 不写进"绑定失败"名单）
+    if snap_key ~= "NUM_SEVEN" and key_exists("NUM_SEVEN") then
+        try_bind("snap-alt=NUM_7", "NUM_SEVEN", {},
+            on_game_thread("snap-num7", do_snap))
     end
 end
 
@@ -1481,9 +1552,9 @@ if #failed > 0 then
     print(TAG .. " BIND FAILED: " .. table.concat(failed, ", "))
 end
 print(TAG .. " ------------------------------------------------")
-print(TAG .. " F7=help F8=reload-cfg  Y=near  U=all  J=next-bp  K=ghost")
+print(TAG .. " F7=help F8=reload-cfg  Y=capture  J=next-bp  K=ghost  U=snap")
 print(TAG .. " L=layer H=resnap N=render-probe O=notify-probe")
-print(TAG .. " NUM_7=snap-to-buildings (key name configurable: snap_key)")
+print(TAG .. " snap key = U (numpad 7 alias; config snap_key)")
 print(TAG .. " arrows=action F9=arrow-mode")
 print(TAG .. " ------------------------------------------------")
 
