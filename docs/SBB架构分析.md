@@ -13,10 +13,9 @@
 > 2. **"左下角那条进度提示是它自己的 UMG 控件画的，不是游戏接口"** —— ❌ **错**。
 >    作者是**调用游戏自己反射出来的消息显示接口**（**左下角滚动消息 + 顶部警告消息**两类）。
 >
-> ⇒ 本文档中凡涉及这两点的段落（§三"锚点复用"、§一 的加粗结论、以及
-> `改造SBB可行性评估.md` / `屏幕提示功能.md` 里引用了这两点的行）**只当"我当时的错误推断"看**，
-> 不要当参考事实用。**我们自己的实现与 SBB 无关**（见 `当前行为总览.md` §5b、
-> `建造吸附.md` §3.6 与下面"我们的实现"一节）。
+> ⇒ 本文档中凡涉及这两点的段落（§三"锚点复用"、§一 的加粗结论）**只当"我当时的错误推断"看**。
+> **我们自己的实现**已经单独成文: [`实现方式.md`](实现方式.md)（里面**不含**任何 SBB 内容）；
+> 与"我一开始以为的 SBB 做法"的对照表见下面的 **§零**（那份表只为记住"错在哪"）。
 >
 > 分析对象：Nexus mod **4073 Simple Building Blueprints v0.16.1**（2026-09-20）
 > 分析日期：2026-09-26
@@ -34,19 +33,22 @@
 
 ---
 
-## 零、★ 我们自己的实现（2026-09-29 核对过代码，权威）
+## 零、★ 我们自己实现 vs"我一开始以为的 SBB 做法"（对照表）
 
-> 这一节与 SBB 无关，只是把"我们到底怎么做的"钉在这里，避免以后又被上面的错误推断带偏。
-> 详细版见 `docs\当前行为总览.md` §5b 与 `docs\建造吸附.md` §3.6。
+> ⚠️ **先读这句**: 下面左列是**我们自己的实现**（2026-09-29 对代码逐条核过，是事实）；
+> 右列那句"我一开始以为 SBB 怎么做"**已经证明是错的**（作者本人更正，见顶部勘误块）——
+> 留在这里**只为了记住"当时错在哪"**，不要当 SBB 的事实用。
+>
+> **我们自己的完整总结文档是 [`实现方式.md`](实现方式.md)，那份里不含任何 SBB 内容。**
 
-| 环节 | 我们的做法 | 关键实现 |
+| 环节 | **我们的做法（事实）** | 我一开始以为 SBB 怎么做（❌ 错） |
 |---|---|---|
-| **蓝图采集**（按 `Y`）| **纯只读 + 写 JSON**；不创建、不修改任何引擎对象（该文件里 `SpawnActor`/`SetMaterial` 出现 **0** 次）| `pwpr_capture.lua`: 枚举 `World.PersistentLevel.Actors` 全表（按类链筛 `PalBuildObject`），逐件读 `K2_GetActorLocation` / `K2_GetActorRotation` / `GetClass():GetFullName()`；结构件网格由 `pwpr_meshmap.lua` 反查 |
-| **投影渲染**（按 `K`）| **自己新建一个空宿主 Actor** + **自己的实例化组件**（本 mod 唯一会创建/修改引擎对象的模块，双重门禁）| `pwpr_ghost.lua`: `World:SpawnActor(Engine.Actor)`；每个**网格资产**一个 `InstancedStaticMeshComponent`（60~80 个/基地）+ `SK_*` 用 SkeletalMesh；实例用局部坐标、组件承载放置变换；材质 = 游戏自带的 `BuildingSurfaceMaterialSet.Highlight` **设到我们自己的组件上**；碰撞关 |
-| **"已放上"不画** | 这些记录的实例**干脆不加**（`Ghost.skip` / `Ghost.rehide`），**不是**改材质、也不是隐藏 actor | `pwpr_placed.lua` + `pwpr_ghost.lua` |
-| **唯一"借用已有建筑"的地方** | **只当坐标参照**（只读位置/类名/朝向），用来算**投影整体偏移**或认领"已放上" | `pwpr_snap.lua`（对齐投票）、`pwpr_placed.lua`（一对一贪心认领，只减不增）；**故意不读网格组件**（老存档里被删的网格 = 野指针） |
-| **放置落位** | **改游戏的放置请求**：钩 `PalNetworkPlayerComponent:RequestBuild_ToServer` → 把 id 参数改成 `None` 拦掉 → 用投影坐标**重发**（**排到下一帧**，`buildsnap_defer`）→ `NotifyOnNewObject` 做落地确认。**全程不碰材质** | `pwpr_buildsnap.lua` |
-| **屏幕提示** | **自建浮层控件**（拿游戏自带的控件类 `WBP_Warning_LowMemory_C` 实例化一份自己用 + `TextBlock:SetText`）或**控制台兜底**；**没有用**游戏的"消息/通知接口" | `pwpr_hud.lua` / `pwpr_notify.lua`；`PlayerController:ClientMessage` 实测**一调用就闪退**⇒ 永久禁用；通道靠按 `O` 探测后选中（未探测 = 控制台）|
+| **蓝图采集**（按 `Y`）| **纯只读 + 写 JSON**；不创建、不修改任何引擎对象（该文件里 `SpawnActor`/`SetMaterial` 出现 **0** 次）。枚举 `World.PersistentLevel.Actors` 全表（按类链筛 `PalBuildObject`），逐件读 `K2_GetActorLocation` / `K2_GetActorRotation` / `GetClass():GetFullName()`；结构件网格由 `pwpr_meshmap.lua` 世界 ISM 反查 | 以为"采集"是"借一个已有建筑当锚点、把幽灵组件挂上去" |
+| **投影渲染**（按 `K`）| **自己新建空宿主 Actor** + **自己的实例化组件**（唯一会创建/修改引擎对象的模块，双重门禁）。每个**网格资产**一个 `InstancedStaticMeshComponent`（60~80 个/基地）+ `SK_*` 用 SkeletalMesh；实例用局部坐标、组件承载放置变换；材质 = 游戏自带的 `BuildingSurfaceMaterialSet.Highlight` **设到我们自己组件上**；碰撞关 | 以为它是"借锚点挂幽灵组件、画完再恢复"（**实际是直接改对应 actor 的材质**）|
+| **"已放上"不画** | 这些记录的实例**干脆不加**（`Ghost.skip` / `Ghost.rehide`），不是改材质、也不是隐藏 actor | —— |
+| **唯一"借用已有建筑"的地方** | **只当坐标参照**（只读位置/类名/朝向）算**投影整体偏移**或认领"已放上"（`pwpr_snap.lua` 投票 / `pwpr_placed.lua` 一对一贪心，只减不增）；**故意不读网格组件**（老存档里被删的网格 = 野指针）| 把"借建筑"理解成了"借**宿主**" |
+| **放置落位** | **改游戏的放置请求**: 钩 `PalNetworkPlayerComponent:RequestBuild_ToServer` → 把 id 参数改成 `None` 拦掉 → 用投影坐标**重发**（**排到下一帧**，`buildsnap_defer`）→ `NotifyOnNewObject` 做落地确认。**全程不碰材质** | —— |
+| **屏幕提示** | **自建浮层控件**（拿游戏自带控件类 `WBP_Warning_LowMemory_C` 实例化一份自己用 + `TextBlock:SetText`）或**控制台兜底**；`ClientMessage` 实测**调用即闪退**⇒ 永久禁用；通道按 `O` 探测后选中（未探测 = 控制台）| 以为"它左下角进度提示是它自己的 UMG 控件画的"（**实际是调游戏反射出来的消息接口**）|
 
 ---
 
@@ -56,6 +58,7 @@
 
 而且它的实现方式比我们设想的更聪明：
 
+> ⚠️（下面这句是我当时的**错误推断**，作者本人已更正 —— 见顶部勘误）：
 > **不是"为每件建筑创建一个 actor"，而是"借用一个已有建筑当锚点，
 > 把幽灵组件挂上去，画完再恢复"。**
 
