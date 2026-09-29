@@ -217,6 +217,56 @@ function BuildSnap.describe_param(p)
     return table.concat(out, " ")
 end
 
+--- ★★ 第 4 个参数（`extra_parameter_archives` / 附加参数）到底是空的还是有内容？
+---
+--- ⚠️⚠️ 2026-09-29 实测教训（**这一条我判断错过一次，代价是"吸附全废"**）:
+---   原来用 `tostring(v)` 当判据 ⇒ 而**普通手放的请求里这个参数也永远存在**
+---   （一个 `TArray` 对象，`tostring` 出来是 `TArray: 00000250B71EAD98` 这种地址）
+---   ⇒ 每一次放置都被判成"带了附加参数" ⇒ 全部**原样放行** ⇒ 玩家实测:
+---   「第一块吸附放置之后，后面的怎么都吸附不上了」。
+---   ⇒ 现在: **必须真的读出"元素个数 > 0"才算有内容**；读不出来一律当"空"（不拦）。
+---     读法依次试 `#v` / `v:Num()` / `v:GetArrayNum()` / `v:Length()`（都是 pcall）。
+---
+--- 返回: true = 空/读不出（**不拦**）, false = **确实有元素**, nil = 保留（不再用于拦截）
+function BuildSnap.extra_state(p)
+    if p == nil then return true, "nil" end
+    local v, unwrapped = unwrap_param(p)
+    if not unwrapped or v == nil then return true, "读不出内容（当空处理，不拦）" end
+    if type(v) == "table" then
+        local n = 0
+        for _ in pairs(v) do n = n + 1 end
+        if n == 0 then return true, "空表" end
+        return false, string.format("表里有 %d 项", n)
+    end
+    -- ★ 先试"长度类"接口（TArray / 容器）；任何一个能读出数字就以它为准
+    local n = nil
+    pcall(function() local x = #v; if type(x) == "number" then n = x end end)
+    for _, m in ipairs({ "Num", "GetArrayNum", "Length", "GetNum" }) do
+        if n == nil then
+            pcall(function()
+                if v[m] ~= nil then
+                    local x = v[m](v)          -- 同时兼容 方法调用 与 属性函数
+                    if type(x) == "number" then n = x end
+                end
+            end)
+            if n == nil then
+                pcall(function()
+                    if v[m] ~= nil then
+                        local x = v[m]
+                        if type(x) == "number" then n = x end
+                    end
+                end)
+            end
+        end
+    end
+    if type(n) == "number" then
+        if n <= 0 then return true, string.format("空（%d 项）", n) end
+        return false, string.format("有 %d 项", n)
+    end
+    -- 读不出个数 ⇒ **不拦**（宁可吸错一点，也不能把整个吸附静默关掉）
+    return true, "读不出个数（当空处理，不拦）"
+end
+
 --- ★ 拦住原请求: 把 buildObjectId 设成 "None"（参考实现用过的写法），并回读确认。
 --- 返回 ok, 回读到的值
 function BuildSnap.block_request(id_param)
@@ -266,6 +316,230 @@ BuildSnap.learned = {}
 ---   ⇒ 只有**学到过**的类型（在 align 模式下正常盖过一次）才拿得到游戏 id；
 ---     学不到就**不吸**，并明确告诉玩家"先用 align 盖一件同类的"。
 BuildSnap.learned_id = {}
+
+-- --------------------------------------------------------------------------
+-- ★★ 降级阶梯 / 卡死记忆（2026-09-29，玩家定稿: 「先试一次，吸附不上再换成不吸 z 轴」）
+--
+-- 为什么需要"记得住":
+--   玩家明确要"高度也跟投影"（地面建时高度不固定，必须吸）—— 那就不能一刀切把
+--   高度关掉。但水面那次实测证明"改了高度再重发"有可能让游戏**整局卡死**
+--   （`.52` 黑匣子铁证，见 `docs\踩坑记录.md` §68）。⇒ 做法是**逐级退让**:
+--
+--   ① `BuildSnap.z_denied[id]` —— 这次会话里"改了高度"的那次放置被游戏**拒了**
+--      （1.2 秒内没有新建筑出现）⇒ 之后同类 id **只吸 x/y**。玩家马上再放一次即可。
+--   ② `BuildSnap.frozen[id]` —— 上一次会话**卡死**在某类 id 的重发里:
+--      · 1 = 那次**改了高度** ⇒ 之后这类只吸 x/y（原样放行高度）；
+--      · 2 = 那次**已经没改高度**还是卡 ⇒ 之后这类**完全不插手**（绝不重发）。
+--      卡死现场写不了任何东西，但黑匣子在**卡死之前**已同步落盘 ⇒ 下次启动读
+--      日志尾部就能学出来（有「● 重发前」登记、没有「● 重发返回」）。
+--   ③ 重置这份记忆: **删掉/移走 `pwpr.log`**（记忆就存在它里面，不额外建文件）。
+-- --------------------------------------------------------------------------
+BuildSnap.frozen = {}        -- [归一化 id] = 1 / 2，见上
+BuildSnap.z_denied = {}      -- [归一化 id] = true，见上
+BuildSnap.z_shifted = {}     -- [归一化 id] = true: 已经为它"自动调过投影高度"
+--- [归一化 id] = dz（**游戏允许的高度 − 投影记录的高度**）
+---   —— 卡死那一局的日志里两个数都在，所以能算出来；下次一按放置就先把投影挪过去。
+BuildSnap.pending_z_shift = {}
+--- ★★★ **危险区域**（2026-09-29 第二次崩溃之后加的）:
+---   `{ {x=,y=,z=,r=}, … }` —— 出过"卡死/崩溃"的那一片。
+--- 为什么需要（实测教训）: 第一次给 `Glass_foundation` 拉黑之后，**换一个类型
+---   `SF_foundation` 在同一片水面又崩了一次** ⇒ 说明**出问题的不是某一种建筑，
+---   而是"在这一片改坐标重发"这件事**（游戏自己的原样放置完全没事）。
+---   ⇒ 出过事的位置**整片拉黑**（半径 `ZONE_R_CM`），这一片以后一律原样放行。
+BuildSnap.bad_zones = {}
+BuildSnap.ZONE_R_CM = 2500.0     -- 25 米（一张蓝图的一角 ~ 一个基地的范围）
+
+--- 请求位置是不是落在"出过事的区域"里（只比水平距离）
+--- 半径: 优先用配置 `buildsnap_zone_m`（米）；没配就用记忆里存的那个（默认 25 米）。
+function BuildSnap.in_bad_zone(x, y)
+    if type(x) ~= "number" or type(y) ~= "number" then return nil end
+    local cfgm = 0.0
+    if BuildSnap.deps.get ~= nil then
+        pcall(function() cfgm = tonumber(BuildSnap.deps.get("buildsnap_zone_m")) or 0.0 end)
+    end
+    for i = 1, #BuildSnap.bad_zones do
+        local z = BuildSnap.bad_zones[i]
+        local r = (cfgm > 0.0) and (cfgm * 100.0) or (z.r or BuildSnap.ZONE_R_CM)
+        local dx, dy = x - z.x, y - z.y
+        if math.sqrt(dx * dx + dy * dy) <= r then
+            return z
+        end
+    end
+    return nil
+end
+
+--- 从一个小括号坐标串 `"x,y,z"` 里取第 3 个数（高度）。取不到返回 nil。
+local function third_of_vec(s)
+    if type(s) ~= "string" then return nil end
+    local vals = {}
+    for num in s:gmatch("(-?%d+%.?%d*)") do vals[#vals + 1] = tonumber(num) end
+    if #vals >= 3 then return vals[3] end
+    return nil
+end
+BuildSnap.third_of_vec = third_of_vec
+
+--- 同上，但返回三个数（x, y, z）。取不到返回 nil。
+local function vec_of(s)
+    if type(s) ~= "string" then return nil end
+    local vals = {}
+    for num in s:gmatch("(-?%d+%.?%d*)") do vals[#vals + 1] = tonumber(num) end
+    if #vals >= 3 then return vals[1], vals[2], vals[3] end
+    return nil
+end
+BuildSnap.vec_of = vec_of
+
+--- 从日志尾部学"上一次会话卡死在哪一类建筑的重发上"，并**顺手把"高度该挪多少"算出来**。
+---
+--- 记忆怎么"跨会话留住"（2026-09-29 改进）:
+---   ① 卡死现场: 黑匣子 `● 重发前`（登记）没有配对的 `● 重发返回`（销账）
+---      ⇒ 读日志尾部就学到了；
+---   ② **学到之后立刻写一行 `● 记忆 frozen …` 回日志**，而且以后每次启动都
+---      **重新登记**这行 ⇒ 它永远待在尾部窗口里，不会被后来的正常日志挤出去
+---      （原来只靠窗口，玩家多玩一会就把记录挤没了 —— 我自己用真日志验证时发现的）；
+---   ③ 高度偏差被应用之后写 `● 记忆 cleared id=…` ⇒ 下次启动不会重复挪。
+---   重置: **删掉/移走 `pwpr.log`**（记忆就在它里面）。
+function BuildSnap.learn_frozen_from_log()
+    if BuildSnap.frozen_learned == true then return BuildSnap.frozen end
+    BuildSnap.frozen_learned = true
+    local U, Lg = nil, nil
+    pcall(function() U = require("pwpr_util") end)
+    pcall(function() Lg = require("pwpr_log") end)
+    if U == nil or Lg == nil or U.read_tail == nil or Lg.path_of == nil then
+        return BuildSnap.frozen
+    end
+    local text = nil
+    -- ★ 512 KB: 要能盖住"卡死之后又玩了一局"的量（64 KB 会被挤掉）
+    pcall(function() text = U.read_tail(Lg.path_of(nil), 524288) end)
+    if type(text) ~= "string" or text == "" then return BuildSnap.frozen end
+    local function norm_of(id) return BuildSnap.norm_id(id) end
+
+    -- 顺序扫描:
+    --   · `● 记忆 frozen …` / `● 记忆 cleared …` —— 跨会话的正式记忆（见上面的说明）
+    --   · `● 重发前 …`（登记） / `● 重发返回 …`（销账） —— 卡死现场
+    --   · ★ 兼容**旧格式**: `.52/.53` 早期写的是 `● 重发前: 即将调用 …`（没有 id=）
+    --     ⇒ 用**前面最近那条「● 请求 #N id=…」**兜底拿 id，坐标也从那一行里取。
+    local armed, last_id, last_gz, learned = nil, nil, nil, false
+    local seen_cleared = {}     -- [归一化 id] = true: 日志里出现过"已为它挪过高度"
+    for line in text:gmatch("[^\r\n]+") do
+        local mid, mstage, mdz = line:match("● 记忆 frozen id=(%S+) stage=(%d+) dz=(%S+)")
+        if mid ~= nil then
+            local n = norm_of(mid)
+            if type(n) == "string" and n ~= "" then
+                BuildSnap.frozen[n] = tonumber(mstage) or 1
+                local z = tonumber(mdz)
+                if z ~= nil then BuildSnap.pending_z_shift[n] = z end
+            end
+        elseif line:find("● 记忆 cleared id=", 1, true) ~= nil then
+            local cid = line:match("● 记忆 cleared id=(%S+)")
+            local n = norm_of(cid)
+            if type(n) == "string" and n ~= "" then
+                BuildSnap.frozen[n] = nil
+                BuildSnap.pending_z_shift[n] = nil
+                seen_cleared[n] = true
+            end
+        end
+        -- ★ 危险区域（整片拉黑）—— 也是"每次启动重新登记"的正式记忆
+        local zx, zy, zz, zr = line:match(
+            "● 记忆 zone x=(%-?[%d%.]+) y=(%-?[%d%.]+) z=(%-?[%d%.]+) r=(%-?[%d%.]+)")
+        if zx ~= nil then
+            BuildSnap.bad_zones[#BuildSnap.bad_zones + 1] = {
+                x = tonumber(zx), y = tonumber(zy), z = tonumber(zz),
+                r = tonumber(zr) or BuildSnap.ZONE_R_CM }
+        end
+        local rid, gvec = line:match("● 请求 #%d+ id=(%S+) 位置=%(([^%)]*)%)")
+        if rid ~= nil and rid ~= "" and rid ~= "?" then
+            last_id = rid
+            last_gz = third_of_vec(gvec)
+        end
+        local id, dz, tvec = line:match("● 重发前 id=(%S+) 改高度=(%S+) 目标=%(([^%)]*)%)")
+        local ax, ay, az = nil, nil, nil
+        if id ~= nil and id ~= "" and id ~= "?" then
+            ax, ay, az = vec_of(tvec)
+            armed = { id = id, z = dz, gz = last_gz, tx = ax, ty = ay, tz = az }
+        elseif line:find("● 重发前", 1, true) ~= nil then
+            if last_id ~= nil then
+                -- 旧格式: 坐标仍在行里（`… → (x,y,z) …`）⇒ 取第一个括号坐标当目标
+                local tvec2 = line:match("%(([^%)]*)%)")
+                ax, ay, az = vec_of(tvec2)
+                armed = { id = last_id, z = "?", guessed = true, gz = last_gz,
+                          tx = ax, ty = ay, tz = az }
+            end
+        elseif line:find("● 重发返回", 1, true) ~= nil then
+            armed = nil
+        end
+    end
+    if armed == nil then return BuildSnap.frozen end
+    local norm = norm_of(armed.id)
+    if type(norm) ~= "string" or norm == "" then return BuildSnap.frozen end
+    -- 高度差: 游戏允许的高度 − 我们（按投影）发过去的高度
+    local dz = nil
+    if type(armed.gz) == "number" and type(armed.tz) == "number" then
+        dz = armed.gz - armed.tz
+    end
+    local usable = (dz ~= nil) and (math.abs(dz) >= 5.0) and (math.abs(dz) <= 500.0)
+    local has_coords = (type(armed.tx) == "number" and type(armed.ty) == "number")
+    if armed.z == "否" then
+        BuildSnap.frozen[norm] = 2                    -- 没改高度还是卡 ⇒ 完全不插手
+    elseif seen_cleared[norm] == true then
+        -- ★★ 2026-09-29 **崩溃之后加的**: 上一局已经为它"挪过投影高度"了，结果**还是**
+        --   出了事（又一次卡死，或者**直接崩了** —— 崩溃栈上 UE4SS 帧反复重复
+        --   = 在我们那次嵌套重发里崩的）⇒ 说明**重发这个请求本身**要命 ⇒ 完全不插手。
+        BuildSnap.frozen[norm] = 2
+    elseif has_coords then
+        -- ★★★ 2026-09-29 **第二次崩溃之后加的**: 出事的位置能定位 ⇒ **整片拉黑**
+        --   （见下面的 zone）。实测: 给 `Glass_foundation` 拉黑之后，换 `SF_foundation`
+        --   在**同一片水面**又崩 ⇒ 问题在"这一片改坐标重发"，不在某一种建筑上。
+        --   ⇒ 这一类也直接完全不插手（不必再拿它试高度）。
+        BuildSnap.frozen[norm] = 2
+    elseif usable then
+        -- 定位不了（日志里没有坐标）、但知道高度差 ⇒ 唯一还值得一试的路: 先挪投影高度
+        BuildSnap.frozen[norm] = 1
+        BuildSnap.pending_z_shift[norm] = dz
+    else
+        -- 也算不出高度差 ⇒ **不冒险重发**（宁可这一整类不吸附，也不能再崩一次）
+        BuildSnap.frozen[norm] = 2
+    end
+    learned = true
+
+    if Lg.emit ~= nil then
+        local how = "**完全不插手**（原样放行）"
+        if BuildSnap.frozen[norm] == 1 then
+            how = string.format("先把**投影高度挪 %+.0f 厘米**（下次按放置时自动做），之后照常吸高度", dz)
+        elseif has_coords then
+            how = "**完全不插手**，并且把出事那一片**整片拉黑**（这一片以后都不重发）"
+        end
+        Lg.emit(string.format(
+            "  [bsnap] ★ 卡死记忆: 上一次会话在「重发 %s」（改高度=%s%s）时出事 ⇒ 这一类建筑%s"
+            .. "（重置办法: 删掉/移走 pwpr.log）",
+            tostring(armed.id), tostring(armed.z),
+            armed.guessed and "，按旧格式从『请求』行推断" or "", how))
+    end
+    -- ★★ 把记忆**写回日志**（并且以后每次启动都会重新登记一遍）⇒ 不会被后来的日志挤出窗口
+    if learned and Log ~= nil and Log.solid ~= nil then
+        pcall(Log.solid, string.format("  [bsnap] ● 记忆 frozen id=%s stage=%d dz=%s",
+            tostring(armed.id), BuildSnap.frozen[norm],
+            (BuildSnap.pending_z_shift[norm] ~= nil)
+                and string.format("%.1f", BuildSnap.pending_z_shift[norm]) or "none"))
+    end
+    -- ★★ 危险区域（整片拉黑）: 拿"出事那一次的目标坐标"当圆心，半径 25 米
+    --   （玩家第二次崩溃实测: 换个类型在同一片水面又崩 ⇒ 问题在"这一片"）
+    if learned and type(armed.tx) == "number" and type(armed.ty) == "number" then
+        if BuildSnap.in_bad_zone(armed.tx, armed.ty) == nil then
+            BuildSnap.bad_zones[#BuildSnap.bad_zones + 1] = {
+                x = armed.tx, y = armed.ty, z = armed.tz, r = BuildSnap.ZONE_R_CM }
+            if Log ~= nil and Log.solid ~= nil then
+                pcall(Log.solid, string.format(
+                    "  [bsnap] ● 记忆 zone x=%.0f y=%.0f z=%.0f r=%.0f",
+                    armed.tx, armed.ty, armed.tz or 0.0, BuildSnap.ZONE_R_CM))
+                pcall(Log.solid, string.format(
+                    "  [bsnap] ★ 危险区域: 上一次会话在这一片（%.0f,%.0f 半径 %.0f 米）"
+                    .. "重发时崩/卡过 ⇒ 这一片以后**一律不重发**（游戏原样放）",
+                    armed.tx, armed.ty, BuildSnap.ZONE_R_CM / 100.0))
+            end
+        end
+    end
+    return BuildSnap.frozen
+end
 
 --- 返回 { best=候选, near=候选 }。两个候选都是 { rec=, x=, y=, z=, dist=, yaw= } 或 nil
 ---   best = 类型命中（含学到的映射）里最近的一件
@@ -452,6 +726,15 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
                                     extra_params)
     BuildSnap.fired = BuildSnap.fired + 1
 
+    -- ★★ 2026-09-29 **黑匣子第 0 行: "钩子被调用了"这件事本身就要留痕** ——
+    --   必须写在**所有前置检查之前**（包括"没投影/没蓝图就原样放行"那几条），
+    --   否则我们仍然分不清"钩子根本没被调用"和"调用了但没走到写日志那一步"。
+    --   起因与判读表见 `docs\踩坑记录.md` §68（玩家报"水面上按放置就卡住"）。
+    if Log ~= nil and Log.solid ~= nil then
+        pcall(Log.solid, string.format(
+            "  [bsnap] ● 钩子被调用（第 %d 次请求）", BuildSnap.fired))
+    end
+
     local trace = (BuildSnap.trace_left > 0)
     if trace then BuildSnap.trace_left = BuildSnap.trace_left - 1 end
 
@@ -493,6 +776,32 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         BuildSnap.ids_seen[id_str] = (BuildSnap.ids_seen[id_str] or 0) + 1
     end
 
+    -- ★★ 附加参数（第 4 个参数）的状态 —— 判据见 `BuildSnap.extra_state` 的说明。
+    --   它是"这次请求是不是特殊建造路径"的唯一外部线索（水面地基那次的嫌疑人）。
+    local extra_empty, extra_why = BuildSnap.extra_state(extra_params)
+
+    -- ★★ 2026-09-29 **黑匣子（每次请求都写，且立刻落盘）** —— 见 pwpr_log.Log.solid。
+    --
+    -- 起因（玩家报「在水面上按放地基就卡住」）: 那次日志里**一行建造请求都没有**，
+    --   于是有两种完全相反的解释，而当时的日志分不出是哪一种:
+    --     ① 我们的钩子**根本没被调用**（那卡死与我们无关 —— 水面上那种建筑可能
+    --        走的不是 `RequestBuild_ToServer` 这条路）；
+    --     ② 调用了、日志写进了内存缓冲，但游戏线程随即卡死（死循环/死锁）
+    --        ⇒ 缓冲里那些行**全丢了**（本项目日志是攒批落盘的，见 pwpr_log）。
+    --   ⇒ 这一行**同步写盘**:
+    --        · 它出现 = 钩子确实被调用过；
+    --        · 再配合后面「● 即将拦原请求」「● 重发前/返回」看**走到哪一步**，
+    --          缺哪一行就说明卡在哪一步。
+    --   ※ 原来只有 `trace_left`（每局前 40 次）才记请求 —— 40 次之后就成了瞎子。
+    if Log ~= nil and Log.solid ~= nil then
+        pcall(Log.solid, string.format(
+            "  [bsnap] ● 请求 #%d id=%s 位置=%s 朝向=%s 附加参数=%s",
+            BuildSnap.fired, tostring(id_str),
+            (lx ~= nil) and string.format("(%.0f,%.0f,%.0f)", lx, ly, lz) or "(读不到)",
+            (want_yaw ~= nil) and string.format("%.1f 度", want_yaw) or "(读不到)",
+            string.format("%s（%s）", tostring(extra_empty), tostring(extra_why))))
+    end
+
     if trace or lx == nil then
         Log.line(string.format(
             "  [bsnap] 请求 #%d: id=%s 位置=%s 朝向=%s | 参数形式 id=%s loc=%s rot=%s",
@@ -512,6 +821,94 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
     local max_dist = tonumber(cfg("buildsnap_max_dist_cm")) or 1200.0
     local snap_z = (cfg("buildsnap_snap_z") == true)
 
+    -- ---- ★★★ 卡死/崩溃的记忆: **只用来"少改一点"，不再用来"完全不干"** ----
+    --
+    -- ⚠️⚠️ 2026-09-29 玩家当场纠正（很重要）:
+    --   「为了不崩把吸附功能改得几乎没用了吗，不能这么处理啊 …… 我现在放了好几个
+    --     几乎贴上去的都不吸附了。」
+    --   ⇒ 我上一版把"出过事的类型"和"出事那一片（25 米）"**整块拉黑**，
+    --     结果玩家整片基地都吸不上 —— 那是**拿功能换安全**，方向错了。
+    --   ⇒ 现在的原则:
+    --     · 记忆**不再阻止吸附**，只做两件"少改一点"的事:
+    --       ① 出过事的类型 ⇒ **不动高度**（x/y 照吸）；
+    --       ② 出事那一片（默认半径见 `buildsnap_zone_m`，**默认 0 = 不启用**）⇒ 只提示；
+    --     · 真正防崩的是下面那道**"精细吸附窗口"**（`buildsnap_safe_cm`）:
+    --       实测三次事故的修正量分别是 **93 / 110 / 143 厘米**，而"贴上去"的都在几十厘米内
+    --       ⇒ 只吸"小修正"，大搬运一律原样放行并**明确告诉玩家**（还给了调大的开关）。
+    local id_norm_now = BuildSnap.norm_id(id_str)
+    if type(id_norm_now) ~= "string" then id_norm_now = "" end
+    local frozen = BuildSnap.frozen[id_norm_now]
+    local z_why = ""
+    if frozen == 1 and BuildSnap.pending_z_shift[id_norm_now] ~= nil then
+        local dz = BuildSnap.pending_z_shift[id_norm_now]
+        local moved = false
+        if BuildSnap.deps.on_z_rejected ~= nil then
+            pcall(function()
+                moved = BuildSnap.deps.on_z_rejected(id_str, dz,
+                    "上一次会话卡死在这个高度上（已按游戏允许的高度修正）") == true
+            end)
+        end
+        if moved == true then
+            BuildSnap.pending_z_shift[id_norm_now] = nil
+            BuildSnap.frozen[id_norm_now] = nil
+            BuildSnap.z_shifted[id_norm_now] = true
+            frozen = nil
+            if Log ~= nil and Log.solid ~= nil then
+                pcall(Log.solid, string.format(
+                    "  [bsnap] ● 高度自适应: %s 上次卡死在该高度 ⇒ 已把投影高度挪 %+.0f 厘米"
+                    .. "（这次就用修正后的高度吸）", tostring(id_str), dz))
+                -- ★ 正式记忆改写成"已清除"，免得下次启动又挪一遍
+                pcall(Log.solid, string.format("  [bsnap] ● 记忆 cleared id=%s",
+                    tostring(id_str)))
+            end
+        end
+    end
+    local snap_z_eff = snap_z
+    if snap_z == true and frozen ~= nil then
+        -- ★★★ 2026-09-29 玩家再次定调「不要再因为害怕游戏崩掉而把功能屏蔽」:
+        --   记忆**不再改变任何行为**（原来"出事过的类型 ⇒ 不动高度"也是一种屏蔽）。
+        --   它现在只做两件事: ① 启动时把学到的内容写进日志/F7；② 若记忆里带"高度差"
+        --   且定位不到区域，才在下面那次"挪投影高度"里用一次。
+        --   ⇒ 防崩全靠**机制**（`buildsnap_defer`: 重发排到下一帧），不靠少吸。
+        z_why = "（记忆里有这一类出过事的记录，但本版**不因此少吸**）"
+    end
+    if snap_z == true and BuildSnap.z_denied[id_norm_now] == true then
+        snap_z_eff = false
+        z_why = "（上一次\"改高度\"被游戏拒了 ⇒ 这一类只吸 x/y —— 这是「被拒」信号，不是「崩」）"
+    end
+
+    -- ---- ★★★ 危险区域（整片拉黑）: 这一片出过"卡死/崩溃" ⇒ **一律不重发**
+    --   实测教训（2026-09-29 第二次崩溃）: 给 `Glass_foundation` 拉黑之后，
+    --   换个类型 `SF_foundation` 在**同一片水面**又崩了一次 ⇒ 问题在"这一片改坐标重发"，
+    --   不在某一种建筑上。⇒ 这一片以后一律原样放行（游戏自己的放置完全安全）。
+    do
+        local hz = 88.0
+        if BuildSnap.deps.half_height_cm ~= nil then
+            pcall(function()
+                local v = BuildSnap.deps.half_height_cm()
+                if type(v) == "number" and v > 10 and v < 500 then hz = v end
+            end)
+        end
+        local zone = nil
+        if type(lx) == "number" and type(ly) == "number" then
+            pcall(function() zone = BuildSnap.in_bad_zone(lx, ly) end)
+        end
+        -- ★★ 2026-09-29 玩家当场纠正: **默认不再因为"出过事"就整片关掉吸附**
+        --   （`buildsnap_zone_m` 默认 0 = 不启用；想用就把米数填上）。
+        --   现在这里只写一行日志提示，**不 return**，后面照样按"精细吸附窗口"决定。
+        if zone ~= nil and (tonumber(cfg("buildsnap_zone_m")) or 0.0) > 0.0 then
+            if BuildSnap.zone_notified ~= true then
+                BuildSnap.zone_notified = true
+                Log.emit(string.format(
+                    "  [bsnap] 提示: 这一片（%.0f,%.0f 半径 %.0f 米）之前重发时崩/卡过 —— "
+                    .. "**只吸小修正**（精细吸附窗口 %.0f 厘米内），大搬运一律原样放行。"
+                    .. "（想整片不吸就把 buildsnap_zone_m 设大、想更激进就调 buildsnap_safe_cm）",
+                    zone.x, zone.y, (zone.r or 2500.0) / 100.0,
+                    tonumber(cfg("buildsnap_safe_cm")) or 80.0))
+            end
+        end
+    end
+
     -- ---- ★★ 演示模式: 在**当前默认已经很松**的基础上再松一档
     --   （默认值本身已经是"玩家实测认可"的灵敏度了，见 pwpr_config.lua）
     if cfg("buildsnap_demo") == true then
@@ -519,7 +916,11 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         type_loose = 300.0
         max_dist = 6000.0
         rot_tol = 180.0
-        snap_z = true
+        -- ★ 演示模式**不再强行打开高度** —— 否则"卡死记忆/被拒"的降级会被它顶掉
+        if frozen ~= 1 and BuildSnap.z_denied[id_norm_now] ~= true then
+            snap_z = true
+            snap_z_eff = true
+        end
         if BuildSnap.demo_logged ~= true then
             BuildSnap.demo_logged = true
             Log.emit("  [bsnap] ★ 演示模式（buildsnap_demo = true）:"
@@ -532,6 +933,8 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
     local target_id, res, why = nil, nil, nil
     -- ★ 朝向要不要跟着投影走（align 模式: 差在容差内才跟；blueprint 模式: 总是跟）
     local snap_yaw = true
+    -- ★★ "高度差 ≤ 人物半高就按平面距离判" 用到的四个值（在 align 分支里算，见下）
+    local half_h, dz_abs, ignore_z, corr_dec = 88.0, nil, false, nil
 
     if mode == "blueprint" then
         -- 蓝图建造: 用准星选（类型也跟着投影走，所以不看玩家选的类型）
@@ -625,6 +1028,28 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         --   玩家那边就是"没反应"。⇒ 一律写到外层 res。
         if found ~= nil then
             res = found.best
+            -- ★★ 玩家定稿的判据（见下面 corr_dec 那段说明）: 高度差 ≤ 人物半高时**不判高度**。
+            --   这里**先算好**，好让"半径闸"和"修正量上限"都用它（否则闸门已经按三维距离
+            --   拦掉了，后面再改就晚了 —— 实测: `距离=387 厘米` 就是这么被拦的）。
+            do
+                local hh = 88.0
+                if BuildSnap.deps.half_height_cm ~= nil then
+                    pcall(function()
+                        local v = BuildSnap.deps.half_height_cm()
+                        if type(v) == "number" and v > 10 and v < 500 then hh = v end
+                    end)
+                end
+                half_h = hh
+                if res ~= nil and type(lz) == "number" and type(lx) == "number"
+                    and type(res.z) == "number" then
+                    dz_abs = math.abs(res.z - lz)
+                    if dz_abs <= hh then
+                        ignore_z = true
+                        local hx, hy = res.x - lx, res.y - ly
+                        corr_dec = math.sqrt(hx * hx + hy * hy)
+                    end
+                end
+            end
             -- ★★ 第二层: **名字相似**（同一个东西、拼写不同）—— 不再依赖"学到映射"
             if res == nil and found.sim ~= nil then
                 res = found.sim
@@ -708,18 +1133,30 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         end
         local dyaw = math.abs(Util.norm_yaw(res.yaw - want_yaw))
         if trace then
+            -- ★ 2026-09-29 补: 把**目标坐标和分轴差值**也写出来 —— 只写"距离 387 厘米"
+            --   看不出"是水平错位还是高度错位"（排查"为什么吸附不上"全靠这一行）。
+            local ddx = (lx ~= nil) and (res.x - lx) or nil
+            local ddy = (ly ~= nil) and (res.y - ly) or nil
+            local ddz = (lz ~= nil) and (res.z - lz) or nil
             Log.line(string.format(
-                "  [bsnap] 匹配: 记录类型=%s%s 距离=%.1f 厘米（阈值 %.0f）"
+                "  [bsnap] 匹配: 记录#%s 类型=%s%s 距离=%.1f 厘米（阈值 %.0f）"
+                .. " 目标=(%.0f,%.0f,%.0f) 请求=(%s) 分轴差=(%s,%s,%s)"
                 .. " 记录朝向=%.1f 请求朝向=%.1f 差=%.1f 度（容差 %.0f）",
-                tostring(res.rec.t),
+                tostring(res.idx), tostring(res.rec.t),
                 (found.loosen == true) and "（放宽命中）" or "",
-                res.dist, radius, res.yaw, want_yaw, dyaw, rot_tol))
+                res.dist, radius, res.x, res.y, res.z,
+                (lx ~= nil) and string.format("%.0f,%.0f,%.0f", lx, ly, lz) or "读不到",
+                ddx and string.format("%.0f", ddx) or "-",
+                ddy and string.format("%.0f", ddy) or "-",
+                ddz and string.format("%.0f", ddz) or "-",
+                res.yaw, want_yaw, dyaw, rot_tol))
         end
-        if res.dist > radius then
+        if (corr_dec or res.dist) > radius then
             BuildSnap.skipped = BuildSnap.skipped + 1
             if trace then
-                Log.line(string.format("  [bsnap] 结果: 太远（%.1f > %.0f 厘米）→ 原样放行",
-                    res.dist, radius))
+                Log.line(string.format("  [bsnap] 结果: 太远（%.1f > %.0f 厘米%s）→ 原样放行",
+                    corr_dec or res.dist, radius,
+                    ignore_z and "（按平面距离判，因为高度差在人物半高内）" or ""))
             end
             return
         end
@@ -738,21 +1175,29 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
 
     if res == nil or res.rec == nil then return end
 
+    -- ---- 「高度差 ≤ 人物半高 ⇒ 不判高度」的判据在 align 分支里已经算好（见 `corr_dec`）。
+    --   这里只做兜底与日志（blueprint 分支/算不出来时 `corr_dec` 仍是 nil ⇒ 用三维距离）。
+    if ignore_z == true and trace then
+        Log.line(string.format(
+            "  [bsnap] 高度差 %.1f 厘米 ≤ 人物半高 %.0f ⇒ **不判高度**，"
+            .. "按平面距离 %.1f 厘米决定（三维距离 %.1f）",
+            tonumber(dz_abs) or 0.0, half_h, corr_dec or res.dist, res.dist))
+    end
+
     -- ---- 目标坐标
     --
-    -- ★★ 高度（z）默认**不用投影的、用游戏自己算的那个**（`buildsnap_snap_z = false`）。
-    --   为什么（2026-09-29 第三次实测的证据）:
-    --     那几次请求里游戏给的高度是 688~742（跟着脚下的地形走），
-    --     而投影记录的 z 固定在 695.3 —— 差最多 47 厘米。
-    --     如果强行吸到投影的 z，那一块就会**陷进地里或悬空** ⇒ 游戏判定不合法 ⇒
-    --     **直接不放**（玩家的体验就是"提示说吸好了，但什么都没建出来"）。
-    --   而且"照着投影盖"通常是在新地形上盖，逐块跟着地形走才是对的。
-    --   想让高度也严格跟投影走（平地复刻）就把 `buildsnap_snap_z` 设成 true。
+    -- ★★ 高度（z）: 默认**跟投影走**（`buildsnap_snap_z = true`，玩家 2026-09-29 定稿:
+    --   「地面建的时候高度是不固定的」）。"吸不上"由**降级阶梯**兜底 ——
+    --   被游戏拒过、或上次因它卡死过 ⇒ 这一类自动只吸 x/y（见 `snap_z_eff` 的来源）。
+    --   （旧注释里"默认不用投影的 z、逐块跟地形"是 2026-09-29 早先的结论，
+    --     后来被玩家的实测手感推翻，保留在此只为解释历史。）
     local tx, ty, tz = res.x, res.y, res.z
-    if not snap_z and lz ~= nil then
+    -- ★ 用 `snap_z_eff`（= 配置值 再叠上"降级阶梯"）: `false` 时保留游戏算出的高度
+    if not snap_z_eff and lz ~= nil then
         tz = lz                     -- 保留游戏算出的高度
     end
-    local dz_note = string.format("高度用%s", snap_z and "投影的" or "游戏给的")
+    local dz_note = string.format("高度用%s%s",
+        snap_z_eff and "投影的" or "游戏给的", z_why)
 
     local target_yaw = res.yaw
     if target_yaw == nil then
@@ -799,7 +1244,7 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
     --   所以下面三件事任意一条成立，就**原样放行**（宁可不吸，也绝不乱吸）。
     -- ---------------------------------------------------------------------
 
-    local corr = res.dist or res.along or 0.0
+    local corr = corr_dec or res.dist or res.along or 0.0
 
     -- 闸 ①: 修正量上限（最有效的总保险）
     local max_jump = tonumber(cfg("buildsnap_max_jump_cm")) or 600.0
@@ -883,6 +1328,12 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
     local min_cm = tonumber(cfg("buildsnap_min_cm")) or 5.0
     if corr <= min_cm then
         BuildSnap.already_ok = (BuildSnap.already_ok or 0) + 1
+        -- ★ 黑匣子: 这一步**不动游戏的请求**（不拦、不改）—— 明确写下来，
+        --   这样"卡死发生在原样放行之后"就能一眼看出与我们无关。
+        if Log ~= nil and Log.solid ~= nil then
+            pcall(Log.solid, string.format(
+                "  [bsnap] ● 已经够准（差 %.1f 厘米）⇒ **不动这次请求**（原样放行）", corr))
+        end
         -- ★★★ 2026-09-29 实测踩到的坑: 这个"提前 return"最初把**记账也一起跳过了**
         --   —— 而"这一条记录已经放上了"跟"我们要不要改写坐标"**毫无关系**。
         --   后果（玩家实测）: 摆得准的那些件永远不进待处理队列 ⇒ 停下来之后
@@ -918,6 +1369,43 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
             "  [bsnap] 干跑（%s）: 本来会把这次放置改发到 %s 的位置 "
             .. "(%.1f,%.1f,%.1f) 朝向 %.1f 度（%s）—— 现在什么都不改",
             mode, tostring(res.rec.t), tx, ty, tz, target_yaw, dz_note))
+        -- ★ 黑匣子: 干跑也要留一行（它**不会**改游戏，所以是"零风险抓现场"的手段）
+        if Log ~= nil and Log.solid ~= nil then
+            pcall(Log.solid, string.format(
+                "  [bsnap] ● 干跑（不改游戏）: 本来要改发到 (%s,%s,%s) 朝向 %.1f 度；"
+                .. "游戏原位置=(%.0f,%.0f,%.0f) 差 %.1f 厘米；附加参数=%s（%s）",
+                tostring(tx), tostring(ty), tostring(tz), target_yaw,
+                (lx or 0), (ly or 0), (lz or 0), corr,
+                tostring(extra_empty), tostring(extra_why)))
+        end
+        Log.flush()
+        return
+    end
+
+    -- ---------------------------------------------------------------------
+    -- ★★ 闸 ④（2026-09-29 新增，**默认开**）: 请求带着"附加参数"时**不插手**。
+    --
+    -- 依据（`.52` 黑匣子的实测日志，`docs\踩坑记录.md` §68）:
+    --   水面地基那次，卡死点被钉在"我们拦下原请求、按吸附坐标**重发**"的那一次
+    --   调用里（`● 重发前` 之后再没有 `● 重发返回`，整个游戏冻结）。
+    --   而"带附加参数"是**特殊建造路径**（水面 / 特殊套组 / 蓝图类操作）最明显的
+    --   外部特征 —— 我们的重发是把它**原样透传**的，从来没读过它的内容。
+    -- ⇒ 规矩 3b「不满足条件就原样放行（宁可没吸上，也不能改错）」:
+    --   看不懂的请求**不动它** —— 游戏会照原样放好（只是不吸附），不会卡死。
+    --   `buildsnap_skip_extra = false` 可恢复旧行为（排查用）。
+    -- ---------------------------------------------------------------------
+    if cfg("buildsnap_skip_extra") == true and extra_empty == false then
+        BuildSnap.skipped = BuildSnap.skipped + 1
+        if Log ~= nil and Log.solid ~= nil then
+            pcall(Log.solid, string.format(
+                "  [bsnap] ● 原样放行（没插手）: 这次请求带了附加参数（%s）⇒ "
+                .. "不动它（怕像水面地基那样把游戏卡死）", tostring(extra_why)))
+        end
+        Log.emit(string.format(
+            "  [bsnap] 原样放行: 请求带了附加参数（%s，本次 id=%s）⇒ **不拦不改**。"
+            .. "这类是特殊建造路径（水面/特殊套组），我们的重发看不懂它；"
+            .. "游戏会按你指的位置原样建造。想强行吸附（有卡死风险）就把 "
+            .. "buildsnap_skip_extra 设成 false", tostring(extra_why), tostring(id_str)))
         Log.flush()
         return
     end
@@ -941,7 +1429,43 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         return
     end
 
+    -- ---------------------------------------------------------------------
+    -- 精细吸附窗口（`buildsnap_safe_cm`，**默认 0 = 不限制**）
+    --
+    -- ⚠️ 2026-09-29 实测把"窗口能防崩"这个假设推翻了: 一次崩溃的修正量只有 **44.9 厘米**
+    --   （在 80 厘米窗口内、也被放行 ⇒ 照样崩）⇒ **修正量大小不是触发条件**。
+    --   按玩家的话「不要再因为害怕游戏崩掉而把功能屏蔽」⇒ **默认不限制**，
+    --   这个键只留给"想保守一点"的人（填了米数就只吸窗口内的）。
+    -- ---------------------------------------------------------------------
+    local safe_cm = tonumber(cfg("buildsnap_safe_cm")) or 0.0
+    if safe_cm > 0.0 and corr > safe_cm then
+        BuildSnap.skipped = BuildSnap.skipped + 1
+        if Log ~= nil and Log.solid ~= nil then
+            pcall(Log.solid, string.format(
+                "  [bsnap] ● 原样放行（没插手）: 这次要挪 %.0f 厘米 > 精细吸附窗口 %.0f 厘米"
+                .. " ⇒ 没吸（游戏按你指的位置放）", corr, safe_cm))
+        end
+        Log.emit(string.format(
+            "  [bsnap] 原样放行: 这次要挪 **%.0f 厘米**（精细吸附窗口 %.0f 厘米）⇒ 没吸。"
+            .. " ① 摆得离投影那件更近（几十厘米内）再放；② 或按 H 重新对齐投影；"
+            .. " ③ 想强行让它吸就把 `buildsnap_safe_cm` 调大（例 200）——"
+            .. " 注意: 实测三次「重发把游戏搞崩」都发生在 **93 厘米以上**的搬运",
+            corr, safe_cm))
+        Log.flush()
+        return
+    end
+
+    -- ★ 黑匣子: 这是"我们**开始改游戏行为**"的那一步 —— 必须留痕（规矩 3b）。
+    if Log ~= nil and Log.solid ~= nil then
+        pcall(Log.solid, string.format(
+            "  [bsnap] ● 即将拦原请求: 目标记录 #%s 差 %.1f 厘米 → 把请求里的 id 改成 None",
+            tostring(res.idx), res.dist or res.along or 0.0))
+    end
     local blocked, block_how = BuildSnap.block_request(build_object_id)
+    if Log ~= nil and Log.solid ~= nil then
+        pcall(Log.solid, string.format("  [bsnap] ● 拦截结果: %s（%s）",
+            blocked and "拦住了" or "没拦住", tostring(block_how)))
+    end
     if not blocked then
         BuildSnap.block_fail = BuildSnap.block_fail + 1
         Log.emit(string.format(
@@ -951,6 +1475,75 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         return
     end
 
+    -- ★★ 黑匣子（最关键的两行）: 重发这一行必须**先落盘**。
+    --   ★ 它同时是"出事记忆"的**登记**: 正常返回会紧跟一行「● 重发返回」销账；
+    --     下次启动读日志尾部，"有登记、没返回"就是"上一次就是在这一次重发里出事的"。
+    --     ⇒ **改这一行的格式要同步改 learn_frozen_from_log 的解析**。
+    local note = string.format("位置修正 %.0f 厘米%s",
+        res.dist or res.along or 0.0,
+        (snap_z_eff and lz ~= nil) and "（含高度）" or "")
+    local job = {
+        net = net, id = name_target, x = tx, y = ty, z = tz,
+        qz = zq[1], qw = zq[2],
+        rec_idx = res.idx, rec_t = res.rec.t, id_str = id_str,
+        id_norm = id_norm_now, snap_z_eff = snap_z_eff,
+        game_z = lz, target_z = tz, corr = res.dist or res.along or 0.0,
+        note = note,
+    }
+
+    -- ★★★ 2026-09-29 **机制改动: 重发排到下一帧**（`buildsnap_defer`，默认开）
+    --
+    -- 为什么（四次事故的共同点）: 卡死 1 次 + 崩 3 次，崩溃栈的最内层都是
+    --   **UE4SS 的帧反复重复 = 深递归** —— 也就是"**在游戏的钩子回调里再回调游戏自己**"。
+    --   而"修正量大小"已经被证明**不是**触发条件（44.9 厘米也崩）。
+    --   ⇒ 钩子里**只负责拦下原请求**，把"按吸附坐标发一次"排到**下一帧**
+    --     （那时原始调用已完全返回、调用栈是干净的）⇒ 从结构上消掉这个递归。
+    --
+    -- 风险（说清楚，别藏）:
+    --   ① `extra_parameter_archives` 是**外层调用栈上的对象**，延后就不能再用 ⇒
+    --      只在这个参数**确实是空的**时候延后（实测普通手放都是"空（0 项）"），
+    --      非空 ⇒ 原样放行（不懂的请求不动它）；
+    --   ② 延后意味着游戏会先把"被拦下那次请求"走完（屏幕可能闪一下提示）——
+    --      这是这条路上唯一"看得见"的副作用；
+    --   ③ 拿不到调度器时自动落回"立刻重发"（旧行为）。
+    if (cfg("buildsnap_defer") ~= false) and (extra_empty == true) then
+        local Sched = nil
+        pcall(function() Sched = require("pwpr_sched") end)
+        -- ★ 必须确认调度器**真的能把工作丢回游戏线程** —— 否则 `Sched.game_thread`
+        --   会"直接执行"（inline），那就等于还是在钩子里嵌套调用，白改。
+        if Sched ~= nil and Sched.game_thread ~= nil
+            and (Sched.has_game_thread == true or Sched.has_game_thread_delay == true) then
+            if Log ~= nil and Log.solid ~= nil then
+                pcall(Log.solid, string.format(
+                    "  [bsnap] ● 重发前 id=%s 改高度=%s 目标=(%.0f,%.0f,%.0f) "
+                    .. "朝向 %.1f 度（**延后到下一帧发**；若之后没有「● 重发返回」"
+                    .. "⇒ 就出事在这一次延后重发里）",
+                    tostring(id_str), snap_z_eff and "是" or "否", tx, ty, tz, target_yaw))
+            end
+            BuildSnap.applied = BuildSnap.applied + 1
+            Log.hot(string.format(
+                "  [bsnap] 结果: 已**排好延后重发**（%s 模式，%s，差 %.1f 厘米，%s）"
+                .. " → (%.1f,%.1f,%.1f) 朝向 %.1f 度",
+                mode, tostring(res.rec.t), job.corr, dz_note, tx, ty, tz, target_yaw))
+            local ok_sched = false
+            pcall(function()
+                Sched.game_thread(function() BuildSnap.run_deferred(job) end, 0)
+                ok_sched = true
+            end)
+            if ok_sched then
+                Log.flush()
+                return
+            end
+            Log.emit("  [bsnap] !! 排延后重发失败 ⇒ 落回立刻重发（旧路）")
+        end
+    end
+
+    if Log ~= nil and Log.solid ~= nil then
+        pcall(Log.solid, string.format(
+            "  [bsnap] ● 重发前 id=%s 改高度=%s 目标=(%.0f,%.0f,%.0f) "
+            .. "朝向 %.1f 度（若后面没有「● 重发返回」⇒ **就卡在这一次重发里**）",
+            tostring(id_str), snap_z_eff and "是" or "否", tx, ty, tz, target_yaw))
+    end
     -- ★ 重发: 用普通 Lua 表 + FName（这两件事在同一环境里已被验证可用）
     --   ※ 我们自己发出去的这一次会再次进回调 —— 由 BuildSnap.busy 挡住。
     local okr, rerr = pcall(function()
@@ -961,12 +1554,15 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
             extra_params,
             { bNotConsumeMaterials = false })
     end)
+    if Log ~= nil and Log.solid ~= nil then
+        pcall(Log.solid, okr
+            and "  [bsnap] ● 重发返回: OK（游戏自己那一步没有卡住）"
+            or ("  [bsnap] ● 重发返回: 失败 " .. tostring(rerr)))
+    end
     if okr then
         BuildSnap.applied = BuildSnap.applied + 1
         -- ★ 给玩家看的一句"这次到底改了多少"（反馈看不出来时，数字最直观）
-        local note = string.format("位置修正 %.0f 厘米%s",
-            res.dist or res.along or 0.0,
-            (snap_z and lz ~= nil) and "（含高度）" or "")
+        -- （`note` 在上面的 job 里已经算好，这里直接用）
         -- ★ 用 Log.hot（只进缓冲、不写控制台）—— 这是**每次都发生**的一行，
         --   而控制台 print 在 UE4SS 里是"窗口 + 另一份日志"的双重 I/O。
         Log.hot(string.format(
@@ -982,7 +1578,9 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
             pcall(BuildSnap.deps.on_placing, res.idx)
         end
         BuildSnap.schedule_confirm(string.format("%s @ (%.0f,%.0f,%.0f)",
-            tostring(res.rec.t), tx, ty, tz), 1200, note, res.idx)
+            tostring(res.rec.t), tx, ty, tz), 1200, note, res.idx,
+            { id = id_str, id_norm = id_norm_now, z_changed = snap_z_eff,
+              game_z = lz, target_z = tz })
         -- ★ 默认**不弹**（`buildsnap_notify`，2026-09-29 性能修复）:
         --   一次放置两条提示（这条 + 落地确认）都要在引擎侧"找控件/写文本/
         --   沿父链显示"，而且原来每步还写一次盘 ⇒ 和游戏自己的放置叠在一起就是卡。
@@ -999,6 +1597,74 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         Log.emit("  [bsnap] !! 拦住成功但**重发失败** —— 这一次没放上（再点一下即可）: "
             .. tostring(rerr))
         Log.emit("  ★ 把这几行发给开发者")
+    end
+    Log.flush()
+end
+
+-- --------------------------------------------------------------------------
+-- ★★★ 延后重发（2026-09-29 为"别再崩"做的**机制改动**，不是关功能）
+--
+-- 为什么: 四次事故（卡死 1 + 崩 3）的崩溃栈最内层都是 **UE4SS 的帧反复重复 = 深递归**
+--   —— 也就是"在游戏的钩子回调里再回调游戏自己"。而"修正量大小"已被实测推翻
+--   （44.9 厘米那次照样崩）⇒ 只改**结构**: 钩子只拦原请求，重发排到**下一帧**。
+--
+-- 这个函数在**干净的调用栈**上执行（原始请求早已返回），因此:
+--   · 不会再有"钩子套钩子"的递归；
+--   · 代价: `extra_parameter_archives`（外层栈上的对象）不能再用 ⇒ 传**空的**（`{}`）。
+--     实测普通手放该参数本来就是"空（0 项）"，所以语义等价。
+-- 自己发出去的这一次会**再次进钩子** ⇒ 用 `BuildSnap.busy` 挡住（和旧路一样）。
+-- --------------------------------------------------------------------------
+function BuildSnap.run_deferred(job)
+    if type(job) ~= "table" then return end
+    if Log ~= nil and Log.solid ~= nil then
+        pcall(Log.solid, "  [bsnap] ● 延后重发: 开始执行（下一帧、干净栈）")
+    end
+    local ok_send, err = false, nil
+    pcall(function()
+        if not Util.valid(job.net) then
+            err = "网络组件已失效"
+            return
+        end
+        BuildSnap.busy = true          -- 挡住我们自己这一次调用再次进钩子
+        local ok2, e2 = pcall(function()
+            job.net:RequestBuild_ToServer(
+                job.id,
+                { X = job.x, Y = job.y, Z = job.z },
+                { X = 0.0, Y = 0.0, Z = job.qz, W = job.qw },
+                {},
+                { bNotConsumeMaterials = false })
+        end)
+        BuildSnap.busy = false
+        ok_send, err = ok2, e2
+    end)
+    if Log ~= nil and Log.solid ~= nil then
+        pcall(Log.solid, ok_send
+            and "  [bsnap] ● 重发返回: OK（延后重发没有出事）"
+            or ("  [bsnap] ● 重发返回: 失败 " .. tostring(err)))
+    end
+    if not ok_send then
+        BuildSnap.requeue_fail = BuildSnap.requeue_fail + 1
+        BuildSnap.applied = math.max((BuildSnap.applied or 1) - 1, 0)
+        Log.emit("  [bsnap] !! 延后重发失败 —— 这一次没放上（再点一下即可）: "
+            .. tostring(err))
+        Log.flush()
+        return
+    end
+    -- 记账 + 通知投影侧 + 排落地确认（和旧路一致）
+    Log.hot(string.format(
+        "  [bsnap] 结果: 已改发到投影位置（延后重发，差 %.1f 厘米，%s）→ (%.1f,%.1f,%.1f)",
+        job.corr, job.snap_z_eff and "含高度" or "不含高度", job.x, job.y, job.z))
+    if BuildSnap.deps.on_placing ~= nil then
+        pcall(BuildSnap.deps.on_placing, job.rec_idx)
+    end
+    BuildSnap.schedule_confirm(string.format("%s @ (%.0f,%.0f,%.0f)",
+        tostring(job.rec_t), job.x, job.y, job.z), 1200, job.note, job.rec_idx,
+        { id = job.id_str, id_norm = job.id_norm, z_changed = job.snap_z_eff,
+          game_z = job.game_z, target_z = job.target_z })
+    if BuildSnap.deps.notify ~= nil and BuildSnap.deps.get ~= nil
+        and BuildSnap.deps.get("buildsnap_notify") == true then
+        BuildSnap.deps.notify(string.format("建造吸附: %s", job.note),
+            string.format("build snap: corrected %.0f cm", job.corr))
     end
     Log.flush()
 end
@@ -1075,12 +1741,21 @@ end
 --- 安排一次"1.2 秒后检查"（改发成功之后调用）
 --- extra_note: 给玩家看的一句话（例: 「位置修正 48 厘米（含高度）」）
 --- rec_idx: 这次改发瞄准的是**哪一条投影记录**（投影侧要靠它精确隐藏那一件）
-function BuildSnap.schedule_confirm(target_desc, delay_ms, extra_note, rec_idx)
+--- info: 可选表 `{ id=游戏给的建筑 id, id_norm=归一化 id, z_changed=这次有没有改高度 }`
+---   —— "被游戏拒了就降级"的阶梯要用它（见 `BuildSnap.z_denied` 的说明）
+function BuildSnap.schedule_confirm(target_desc, delay_ms, extra_note, rec_idx, info)
     if BuildSnap.confirm_installed ~= true then return end
     -- ★ 先进先出队列（放得快时不会互相覆盖 —— 这是"偶尔漏一块"的根因之一）
     if BuildSnap.pending_confirms == nil then BuildSnap.pending_confirms = {} end
     local pc = { done = false, target = target_desc,
                  note = extra_note, rec_idx = rec_idx }
+    if type(info) == "table" then
+        pc.id = info.id
+        pc.id_norm = info.id_norm
+        pc.z_changed = (info.z_changed == true)
+        pc.game_z = info.game_z
+        pc.target_z = info.target_z
+    end
     local list = BuildSnap.pending_confirms
     list[#list + 1] = pc
     local Sched = nil
@@ -1125,10 +1800,54 @@ function BuildSnap.schedule_confirm(target_desc, delay_ms, extra_note, rec_idx)
                     BuildSnap.deps.notify("吸附后的位置游戏不认可（这次没放上）",
                         "build placed position rejected by game")
                 end
-                -- ★ 记住"这一条刚被游戏拒绝过"（闸 ③ 用: 短时间内不再吸它）
+                -- ★★ 高度自适应 / 降级阶梯（玩家 2026-09-29 定稿）:
+                --   这次**改了高度**还是被游戏拒了 ⇒ **先试着把投影高度挪到游戏允许的位置**
+                --   （`deps.on_z_rejected` = 改偏移 + 重画投影 + 弹提示），挪成功就
+                --   **不降级**（下次照常吸高度，只是高度基准被修正了）；
+                --   挪不了 / 已经挪过一次还是被拒 ⇒ 退到"这一类只吸 x/y"（`z_denied`）。
+                --   ★ 前两级都**故意不设**"这条记录刚被拒"的闸（闸 ③）—— 让玩家马上
+                --     再放一次就能用上修正后的策略；等到"不改高度"也被拒了才落回闸 ③。
                 if pc.rec_idx ~= nil then
-                    if BuildSnap.rejected == nil then BuildSnap.rejected = {} end
-                    BuildSnap.rejected[pc.rec_idx] = os.clock()
+                    local idn = pc.id_norm
+                    local zcase = (pc.z_changed == true) and type(idn) == "string"
+                        and idn ~= ""
+                    if zcase and BuildSnap.z_shifted[idn] ~= true then
+                        local dz = nil
+                        if type(pc.game_z) == "number" and type(pc.target_z) == "number" then
+                            dz = pc.game_z - pc.target_z
+                        end
+                        local moved = false
+                        if dz ~= nil and BuildSnap.deps.on_z_rejected ~= nil then
+                            pcall(function()
+                                moved = BuildSnap.deps.on_z_rejected(pc.id, dz,
+                                    "吸附后的高度游戏不认（这次没放上）") == true
+                            end)
+                        end
+                        if moved == true then
+                            BuildSnap.z_shifted[idn] = true
+                            Log.emit(string.format(
+                                "  [bsnap] ★ 高度自适应: %s 吸附的高度被拒 ⇒ 已把**投影高度"
+                                .. "挪 %+.0f 厘米**（对齐到游戏允许的高度）⇒ **再放一次**即可"
+                                .. "（高度继续跟投影）", tostring(pc.id), dz))
+                        else
+                            BuildSnap.z_denied[idn] = true
+                            Log.emit(string.format(
+                                "  [bsnap] 这次「改了高度」被游戏拒了，而且**挪不了投影高度**"
+                                .. "（%s）⇒ 之后 **%s 这一类只吸 x/y**。**马上再放一次**"
+                                .. "就是降级后的策略；想恢复吸高度: 删掉/移走 pwpr.log 后重启",
+                                (dz == nil) and "读不到高度差" or "回调不可用",
+                                tostring(pc.id)))
+                        end
+                    elseif zcase then
+                        BuildSnap.z_denied[idn] = true
+                        Log.emit(string.format(
+                            "  [bsnap] 调过投影高度后**还是被拒** ⇒ 之后 **%s 这一类只吸 x/y**"
+                            .. "（不再动高度）", tostring(pc.id)))
+                    else
+                        -- ★ 记住"这一条刚被游戏拒绝过"（闸 ③ 用: 短时间内不再吸它）
+                        if BuildSnap.rejected == nil then BuildSnap.rejected = {} end
+                        BuildSnap.rejected[pc.rec_idx] = os.clock()
+                    end
                 end
                 -- ★ 投影侧: 刚才是"先按预测藏起来"的 —— 游戏没建出来就得**撤销**
                 if BuildSnap.deps.on_placed_failed ~= nil then
@@ -1180,6 +1899,8 @@ function BuildSnap.install()
     end
     BuildSnap.installed = true
     BuildSnap.hook_ids = { pre_id, post_id }
+    -- ★ 顺带学一次"上一次会话卡死在哪一类建筑的重发上"（卡死记忆，见上方说明）
+    pcall(BuildSnap.learn_frozen_from_log)
     -- 顺带注册"新建建筑"通知（落地确认用；没有这个 API 就只少一层确认）
     local okc, whyc = BuildSnap.install_confirm()
     return true, string.format("pre_id=%s post_id=%s; 落地确认: %s",
@@ -1202,6 +1923,23 @@ function BuildSnap.status_lines()
         BuildSnap.fired, BuildSnap.applied, BuildSnap.already_ok or 0,
         BuildSnap.would_apply, BuildSnap.skipped, BuildSnap.block_fail,
         BuildSnap.requeue_fail)
+    -- ★ 降级阶梯 / 卡死记忆的状态（F7 一眼能看到"哪一类被降级了"）
+    do
+        local frz, zdn = {}, {}
+        for k, v in pairs(BuildSnap.frozen or {}) do
+            frz[#frz + 1] = string.format("%s=%s", tostring(k),
+                (v == 2) and "不插手" or "只吸x/y")
+        end
+        for k in pairs(BuildSnap.z_denied or {}) do
+            zdn[#zdn + 1] = tostring(k)
+        end
+        if #frz > 0 or #zdn > 0 then
+            out[#out + 1] = string.format(
+                "建造吸附降级: 卡死记忆[%s] 本次被拒后降级[%s]（重置: 删掉 pwpr.log）",
+                (#frz > 0) and table.concat(frz, ", ") or "无",
+                (#zdn > 0) and table.concat(zdn, ", ") or "无")
+        end
+    end
     if BuildSnap.confirm_installed == true then
         out[#out + 1] = string.format(
             "  落地确认: 收到新建通知 %d 次（改发后确认成功 %d / 没等到 %d）",

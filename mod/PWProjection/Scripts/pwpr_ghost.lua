@@ -1037,7 +1037,15 @@ function Ghost.apply_transform(place)    -- ★★ 这里**不再**做"世界标
     --   某个组件/实例的变换没生效，或者它被放到了别的地方。
     --   而**骨骼网格**是"一个组件就是一件"，位置最好核对 ⇒ 把它们的
     --   【期望位置】和【引擎回读的实际位置】都打出来，一对比就知道是谁跑偏了。
-    if Log ~= nil then
+    -- ★★ 诊断开关（默认 **关**，见 pwpr_config 的 `ghost_dump_move`）:
+    --   这一段是 2026-09-28 排查"投影里有件东西悬在空中"时的取证代码，
+    --   但一直**无条件**跑在每一次 apply_transform 上（微调一次 = ~300 次引擎读
+    --   + 150 行日志 + 一次落盘）⇒ 2026-09-29 收进开关，默认关。
+    local dump_on = false
+    pcall(function()
+        dump_on = (require("pwpr_config").get("ghost_dump_move") == true)
+    end)
+    if Log ~= nil and dump_on then
         local hx, hy, hz = nil, nil, nil
         pcall(function()
             local l = Ghost.host:K2_GetActorLocation()

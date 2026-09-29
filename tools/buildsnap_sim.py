@@ -465,7 +465,11 @@ REQUIRED_CONFIG_DEFAULTS = [
     "buildsnap_max_dist_cm = 3000",
     "buildsnap_type_loose_cm = 150",
     "buildsnap_learn_max_cm = 30",
-    "buildsnap_max_jump_cm = 600",
+    "buildsnap_max_jump_cm = 200",
+    "buildsnap_skip_extra = false",
+    "buildsnap_safe_cm = 0",
+    "buildsnap_zone_m = 0",
+    "buildsnap_defer = true",
     "buildsnap_demo       = false",
     "ghost_hide_placed  = true",
     "ghost_hide_placed_cm = 40",
@@ -481,7 +485,12 @@ REQUIRED_CONFIG_DEFAULTS = [
     "buildsnap_notify_confirm = false",
     "notify_trace         = false",
     "ghost_hide_scan_interval_s = 8",
+    "ghost_dump_move = false",
 ]
+
+
+LOG_LUA = os.path.join(ROOT, "mod", "PWProjection", "Scripts", "pwpr_log.lua")
+UTIL_LUA = os.path.join(ROOT, "mod", "PWProjection", "Scripts", "pwpr_util.lua")
 
 
 PLACED_LUA = os.path.join(ROOT, "mod", "PWProjection", "Scripts",
@@ -946,6 +955,214 @@ def test_learn_poisoning(verbose=True):
           act5 == "snap" and learned.get("woodenfoundation") == "someweirdtypename",)
 
 
+# ---------------------------------------------------------------------------
+# 黑匣子守卫（2026-09-29 新增）
+#
+# 起因: 玩家报「在水面上放地基，按下放置就整局卡死」。事后想查"到底卡在哪一步"，
+#   却发现**查不动** —— 本项目的 pwpr.log 是"攒够 200 行 / 隔 5 秒才落盘"的，
+#   游戏线程一卡死，缓冲区里最后那一段全丢；而放置那条路（会**改游戏行为**）原本
+#   只有"前 40 次请求"才记一行。⇒ 处置完全相反的两件事分不出来:
+#     ① 我们的钩子根本没被调用；② 调用了、但卡在"拦 + 重发"里。
+#
+# ⇒ 现在放置路径上有一组**同步落盘**的埋点（`Log.solid`，见 docs/踩坑记录.md §68）。
+#   这里守住它不被后来的改动删掉/挪到门槛后面 —— 否则下次卡死又变成瞎子。
+# ---------------------------------------------------------------------------
+BLACKBOX_MARKS = [
+    "● 钩子被调用",
+    "● 请求 #",
+    "● 即将拦原请求",
+    "● 拦截结果",
+    "● 重发前",
+    "● 重发返回",
+    "● 干跑（不改游戏）",
+    "● 原样放行（没插手）",
+]
+
+
+def check_blackbox(verbose):
+    try:
+        with open(LOG_LUA, "r", encoding="utf-8") as f:
+            log_src = f.read()
+        with open(LUA, "r", encoding="utf-8") as f:
+            snap_src = f.read()
+        with open(GHOST_LUA, "r", encoding="utf-8") as f:
+            ghost_src = f.read()
+        with open(CONFIG_LUA, "r", encoding="utf-8") as f:
+            cfg_src = f.read()
+        with open(UTIL_LUA, "r", encoding="utf-8") as f:
+            util_src = f.read()
+    except OSError as exc:
+        print("[严重] 黑匣子守卫: 读不到源码: {}".format(exc))
+        return False
+
+    bad = []
+
+    # ① 同步落盘的通道本身还在（必须真的写文件，不能只是进缓冲）
+    if "function Log.solid(" not in log_src:
+        bad.append("pwpr_log.lua 里没有 Log.solid（同步落盘的通道）")
+    elif "Util.append_file" not in log_src.split("function Log.solid(")[1][:800]:
+        bad.append("Log.solid 没有直接写文件（只进缓冲就等于没修）")
+
+    # ② 放置路径上的埋点一个都不能少
+    for mark in BLACKBOX_MARKS:
+        if mark not in snap_src:
+            bad.append("pwpr_buildsnap.lua 少了埋点: {}".format(mark))
+
+    # ③ 第一行必须在**所有前置检查之前**，否则还是分不清
+    #    "钩子没被调用" 和 "调用了但没过门槛"。
+    i_mark = snap_src.find("● 钩子被调用")
+    i_gate = snap_src.find('cfg("buildsnap_enabled")')
+    if i_mark < 0 or i_gate < 0 or i_mark > i_gate:
+        bad.append("「● 钩子被调用」不在前置检查之前（要写在 buildsnap_enabled 门槛之前）")
+
+    # ④ 每次微调都跑的那 150 行取证转储必须还在开关后面（默认关）
+    if "ghost_dump_move" not in ghost_src:
+        bad.append("pwpr_ghost.lua 的 [ghost/dump] 没有接上 ghost_dump_move 开关")
+    if "ghost_dump_move = false" not in cfg_src:
+        bad.append("pwpr_config.lua 里 ghost_dump_move 的默认值不是 false")
+
+    # ⑤ 降级阶梯 / 卡死记忆（2026-09-29 玩家定稿: 「先试一次，吸不上再换成不吸 z 轴」）
+    #    它靠"黑匣子登记 ↔ 日志尾部解析"这一对，两边必须同时在、且格式一致。
+    if "BuildSnap.learn_frozen_from_log" not in snap_src:
+        bad.append("pwpr_buildsnap.lua 里没有 learn_frozen_from_log（卡死记忆）")
+    if "read_tail" not in snap_src:
+        bad.append("卡死记忆没有读日志尾部（整份读日志会太慢）")
+    if "function Util.read_tail(" not in util_src:
+        bad.append("pwpr_util.lua 里没有 Util.read_tail（读日志尾部要用的新工具）")
+    if "BuildSnap.z_denied" not in snap_src:
+        bad.append("没有 z_denied（「改了高度被拒 ⇒ 之后只吸 x/y」这一级降级）")
+    # ★ 高度自适应: 被拒 ⇒ 先把**投影高度**挪到游戏允许的位置（玩家 2026-09-29 提的方案）
+    if "pending_z_shift" not in snap_src:
+        bad.append("没有 pending_z_shift（「该把投影高度挪多少」的记忆）")
+    if "on_z_rejected" not in snap_src:
+        bad.append("被拒后没有调用 deps.on_z_rejected（高度自适应没法生效）")
+    # ★ 附加参数判据必须"真的读出个数"，不能靠 tostring（那次事故就是它）
+    if "GetArrayNum" not in snap_src:
+        bad.append("额外参数判据缺少长度类接口（不能只靠 tostring —— 曾误伤全部放置）")
+    if "buildsnap_skip_extra = false" not in cfg_src:
+        bad.append("buildsnap_skip_extra 的默认值不是 false（误伤过，必须是排查开关）")
+    if "● 重发前 id=%s 改高度=%s" not in snap_src:
+        bad.append("黑匣子的「● 重发前」没有带 id=/改高度=（卡死记忆没法解析）")
+    if "● 重发前 id=(%S+) 改高度=(%S+)" not in snap_src:
+        bad.append("卡死记忆的解析式与「● 重发前」的格式对不上")
+    # ★ 记忆要能跨会话留住: `● 记忆 frozen …` 的写入格式与解析式也必须成对
+    if "● 记忆 frozen id=%s stage=%d dz=%s" not in snap_src:
+        bad.append("没有写「● 记忆 frozen …」这一行（记忆会被后来的日志挤出窗口）")
+    if "● 记忆 frozen id=(%S+) stage=(%d+) dz=(%S+)" not in snap_src:
+        bad.append("「● 记忆 frozen …」的解析式对不上")
+    if "● 记忆 cleared id=(%S+)" not in snap_src:
+        bad.append("高度修正应用后没有写「● 记忆 cleared …」（会重复挪）")
+    if "read_tail(Lg.path_of(nil), 524288)" not in snap_src:
+        bad.append("读日志尾部窗口太小（玩家多玩一会就把卡死记录挤出窗口）")
+    # ★ 崩溃之后加的: "已经为它挪过高度、结果还是出事（卡死/崩溃）" ⇒ 这一条必须**彻底拉黑**
+    if "seen_cleared" not in snap_src:
+        bad.append("没有 seen_cleared（挪过高度还是出事 ⇒ 应当「完全不插手」，不能换个参数再试）")
+    # ★ 「匹配」那行要能看出是水平错位还是高度错位
+    if "分轴差=" not in snap_src:
+        bad.append("「匹配」日志缺少分轴差（排查「吸附不上」时看不出错在哪个轴）")
+    # ★ 第二次崩溃之后加的: 危险区域（整片拉黑）+ 玩家要的"高度差不判"判据
+    if "in_bad_zone" not in snap_src or "bad_zones" not in snap_src:
+        bad.append("没有危险区域（整片拉黑）的记录 —— 换个类型在同一片还会再崩")
+    # ★★ 玩家 2026-09-29 当场纠正: 不能"为了不崩就整类/整片关掉吸附" ⇒ 必须有
+    #   "精细吸附窗口"（只吸小修正）并且危险区域**默认不启用**、**只提示不 return**。
+    if "buildsnap_safe_cm" not in snap_src or "精细吸附窗口" not in snap_src:
+        bad.append("缺少「精细吸附窗口」（buildsnap_safe_cm）—— 防崩不能靠关功能")
+    if 'cfg("buildsnap_zone_m")' not in snap_src:
+        bad.append("危险区域没有接上 buildsnap_zone_m（默认 0 = 不启用）")
+    if "● 记忆 zone x=%.0f y=%.0f z=%.0f r=%.0f" not in snap_src:
+        bad.append("危险区域没有写「● 记忆 zone …」（跨会话记不住）")
+    if "● 记忆 zone x=(%-?[%d%.]+) y=(%-?[%d%.]+) z=(%-?[%d%.]+) r=(%-?[%d%.]+)" not in snap_src:
+        bad.append("「● 记忆 zone …」的解析式对不上")
+    if "corr_dec" not in snap_src or "人物半高" not in snap_src:
+        bad.append("缺少「高度差 ≤ 人物半高 ⇒ 按平面距离判」这条判据（玩家 2026-09-29 要求）")
+    if "half_height_cm" not in snap_src:
+        bad.append("没有取人物半高（Session.feet_offset_cm 那个值）")
+
+    if bad:
+        print("[严重] 黑匣子守卫失败:")
+        for b in bad:
+            print("   - {}".format(b))
+        print("  ⇒ 见 docs/踩坑记录.md §68: 卡死现场只有这几行能救命，别的都在缓冲里。")
+        return False
+    print("  [通过] 黑匣子守卫（落盘通道 + {} 个埋点 + 门槛顺序 + 转储开关）"
+          .format(len(BLACKBOX_MARKS)))
+    return True
+
+
+def parse_frozen_tail(text):
+    """Python 复刻 `BuildSnap.learn_frozen_from_log` 的尾部解析（Lua 侧改了要同步改）。
+
+    判据: 黑匣子「● 重发前 …」是**登记**、「● 重发返回 …」是**销账**；
+    "有登记、没销账" = 上一次会话就是在这一次重发里出的事（卡死/崩溃）。
+    返回 (id 或 None, 阶段 1/2 或 None, 是否旧格式推断, 有没有坐标)。
+    阶段 2 = 完全不插手（并会把出事那一片整片拉黑）；阶段 1 = 先挪投影高度再吸。
+    """
+    armed = None
+    last_req = None
+    cleared = {}
+    for line in re.split(r"[\r\n]+", text):
+        if not line:
+            continue
+        m = re.search(r"● 记忆 cleared id=(\S+)", line)
+        if m:
+            cleared[m.group(1)] = True
+        m = re.search(r"● 请求 #\d+ id=(\S+)", line)
+        if m and m.group(1) not in ("", "?"):
+            last_req = m.group(1)
+        m = re.search(r"● 重发前 id=(\S+) 改高度=(\S+) 目标=\(([^)]*)\)", line)
+        if m and m.group(1) not in ("", "?"):
+            armed = {"id": m.group(1), "z": m.group(2), "guessed": False,
+                     "has_coords": len(re.findall(r"-?\d+\.?\d*", m.group(3))) >= 3}
+        elif "● 重发前" in line:
+            if last_req:
+                t = re.search(r"\(([^)]*)\)", line)
+                armed = {"id": last_req, "z": "?", "guessed": True,
+                         "has_coords": bool(t) and len(
+                             re.findall(r"-?\d+\.?\d*", t.group(1))) >= 3}
+        elif "● 重发返回" in line:
+            armed = None
+    if not armed:
+        return None, None, False, False
+    # 拉黑（阶段 2）的三种情形: 没改高度也出事 / 挪过高度还是出事 / 出事位置能定位（整片拉黑）
+    if armed["z"] == "否" or cleared.get(armed["id"]) or armed["has_coords"]:
+        stage = 2
+    else:
+        stage = 1
+    return armed["id"], stage, armed["guessed"], armed["has_coords"]
+
+
+def test_frozen_parser(verbose):
+    print("-" * 74)
+    print("⑬ 卡死记忆: 从日志尾部学「上一次是在哪一类建筑的重发里出事的」")
+    # ① 新格式 + 改了高度 + **有坐标** ⇒ 完全拉黑（阶段 2）并整片拉黑
+    t1 = ("  [bsnap] ● 请求 #1 id=Glass_foundation 位置=(1,2,3) 朝向=0.0 度\n"
+          "  [bsnap] ● 重发前 id=Glass_foundation 改高度=是 目标=(1,2,3) 朝向=0.0 度\n")
+    check("新格式 + 有坐标 ⇒ 完全拉黑（阶段 2）",
+          parse_frozen_tail(t1)[:2] == ("Glass_foundation", 2) and parse_frozen_tail(t1)[3],
+          "得到 %s" % (parse_frozen_tail(t1),))
+    # ② 新格式 + 没改高度 ⇒ 完全拉黑
+    t2 = "  [bsnap] ● 重发前 id=Glass_foundation 改高度=否 目标=(1,2,3)\n"
+    check("新格式 + 没改高度 ⇒ 完全拉黑（阶段 2）", parse_frozen_tail(t2)[1] == 2,
+          "得到 %s" % (parse_frozen_tail(t2),))
+    # ③ 有登记也有销账（正常返回）⇒ 什么都不学
+    t3 = ("  [bsnap] ● 重发前 id=Wood_Foundation 改高度=是 目标=(1,2,3)\n"
+          "  [bsnap] ● 重发返回: OK（游戏自己那一步没有卡住）\n")
+    check("有登记 + 有销账 ⇒ 不学（正常放置）", parse_frozen_tail(t3)[0] is None,
+          "得到 %s" % (parse_frozen_tail(t3),))
+    # ④ 旧格式（.52/.53 早期没有 id=）⇒ 用前面最近那条「● 请求」兜底，坐标仍能取到
+    t4 = ("  [bsnap] ● 请求 #2 id=Glass_foundation 位置=(1,2,3) 朝向=77.6 度\n"
+          "  [bsnap] ● 即将拦原请求: 目标记录 #1074 差 145.0 厘米\n"
+          "  [bsnap] ● 重发前: 即将调用 RequestBuild_ToServer → (1,2,3) 朝向 -17.0 度\n")
+    check("旧格式 ⇒ 从「● 请求」行推出 id 与坐标 ⇒ 阶段 2",
+          parse_frozen_tail(t4)[:2] == ("Glass_foundation", 2),
+          "得到 %s" % (parse_frozen_tail(t4),))
+    # ⑤ 挪过高度（记忆里 cleared）之后又出事 ⇒ 完全拉黑
+    t5 = ("  [bsnap] ● 记忆 cleared id=Glass_foundation\n"
+          "  [bsnap] ● 重发前 id=Glass_foundation 改高度=是 目标=(1,2,3)\n")
+    check("挪过高度还是出事 ⇒ 完全拉黑（阶段 2）", parse_frozen_tail(t5)[1] == 2,
+          "得到 %s" % (parse_frozen_tail(t5),))
+
+
 def main():
     verbose = "-v" in sys.argv
     print("=" * 74)
@@ -965,11 +1182,14 @@ def main():
     test_learn_poisoning(verbose)
     test_pick_nearest_similar(verbose)
     test_thresholds(verbose)
+    test_frozen_parser(verbose)
     # 默认值守卫（读 pwpr_config.lua）+ 投影侧接口守卫: 失败直接算失败
     if not check_config_defaults(verbose):
         FAILED.append("配置默认值守卫")
     if not check_placed_api(verbose):
         FAILED.append("投影侧接口守卫")
+    if not check_blackbox(verbose):
+        FAILED.append("黑匣子守卫")
     print("=" * 74)
     if FAILED:
         print("结果: %d 项失败: %s" % (len(FAILED), ", ".join(FAILED)))

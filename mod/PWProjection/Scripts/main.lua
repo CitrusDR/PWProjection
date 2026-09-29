@@ -2300,6 +2300,49 @@ BuildSnap.deps.context = function()
 end
 BuildSnap.deps.player_aim = function() return Session.aim() end
 BuildSnap.deps.notify = function(cn, en) Notify.show(cn, en) end
+--- ★★ 人物半高（厘米）—— 玩家 2026-09-29 定稿的判据要用它:
+---   「吸附的时候能不能**高度差在人物一半以内**的时候就不判高度只根据 xy 决定是否吸附」
+---   来源就是 K 放投影时读的那个胶囊体半高（实测 88 厘米，见 `Session.feet_offset_cm`）。
+BuildSnap.deps.half_height_cm = function() return (Session.feet_offset_cm()) end
+
+--- ★★ 2026-09-29 玩家提的方案（原话）:
+---   「如果发现按吸附的高度不让放置（比如现在水面的这种情况），就在本次放置之后，
+---     把投影地基的 z 轴也换到实际允许的位置，并且弹出一个提示，说因为地基吸附后的
+---     高度不允许，所以才自动把投影的高度换了下之类的。」
+---
+--- 干什么: 把**整个投影的高度**挪 `dz` 厘米（`dz = 游戏允许的高度 − 我们按投影发的高度`），
+---   并把这件事记进"位置记忆"（走的就是微调那条路: `refresh_projection` 里会
+---   `Resume.remember` + 攒批写回），然后**明确告诉玩家**。
+--- 为什么这样比"以后不吸高度"好: 水面/特殊地形上游戏认的高度和投影记录的高度本来就差
+---   一截；把投影挪过去之后，**高度还能继续跟投影**（玩家要的手感），而且整份蓝图
+---   在高度上也和现实对齐了。
+--- 返回 true = 真的挪了（调用方据此决定"不降级"）；false = 条件不满足（别乱挪）。
+BuildSnap.deps.on_z_rejected = function(id, dz, why)
+    if type(dz) ~= "number" or dz ~= dz then return false end
+    local absd = math.abs(dz)
+    -- 太小 = 噪声（不是高度问题）；太大 = 根本不是"高度不允许"，别把整份蓝图挪飞
+    if absd < 5.0 or absd > 500.0 then return false end
+    if not Session.active or not Ghost.visible then return false end
+    if Session.offset == nil then return false end
+
+    Session.offset.z = (tonumber(Session.offset.z) or 0.0) + dz
+    local id_txt = tostring(id or "这一类建筑")
+    local ok = pcall(function()
+        refresh_projection(string.format("高度自适应（%s）", tostring(why or "游戏不认这个高度")))
+    end)
+    pcall(function()
+        Notify.show(string.format(
+            "「%s」吸附后的高度游戏不认 ⇒ 已自动把**投影高度**挪 %+.0f 厘米"
+            .. "（对齐到游戏允许的高度），再放一次即可；高度继续跟投影",
+            id_txt, dz), string.format("auto-fixed projection height by %+.0f cm", dz))
+    end)
+    Log.emit(string.format(
+        "  [bsnap] ★ 高度自适应: %s 吸附的高度被游戏拒绝 ⇒ **投影 Z 偏移 %+.0f 厘米**"
+        .. " ⇒ 现在 %s（已记进位置记忆；不满意就用方向键/小键盘 9、3 手动微调）",
+        id_txt, dz, Session.offset_note()))
+    Log.flush()
+    return ok and true or false
+end
 
 do
     local okB, whyB = BuildSnap.install()

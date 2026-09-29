@@ -42,7 +42,7 @@ end
 --- ⇒ 现在启动时固定打一行 `构建标记: <日期.序号>`，F7 里也有；
 ---   看日志第一眼就能确认"跑的到底是哪一版"。
 --- 规矩: **改了功能就把它 +1**（只改注释/文档不用动）。
-Util.BUILD = "2026-09-29.51"
+Util.BUILD = "2026-09-29.59"
 
 -- --------------------------------------------------------------------------
 -- 路径
@@ -469,6 +469,24 @@ function Util.append_file(path, text)
     f:write(text)
     f:close()
     return true
+end
+
+--- ★ 只读文件**尾部**若干字节（默认 64 KB）。返回 字符串 或 nil,错误
+---
+--- 用途（2026-09-29 卡死事件，见 `docs\踩坑记录.md` §68）:
+---   游戏线程卡死时**来不及写任何东西**，但黑匣子（`Log.solid`）在卡死**之前**就已经
+---   同步落盘了 ⇒ 下次启动只要读**日志尾巴**就能判断"上一次是不是卡死在我们的重发里"。
+--- 为什么不用 `read_file`: 日志会长到几十 MB（实测 28 MB / 23 万行），整份读进来太贵。
+function Util.read_tail(path, max_bytes)
+    local f, err = io.open(path, "rb")
+    if f == nil then return nil, tostring(err) end
+    local size = f:seek("end")
+    local n = tonumber(max_bytes) or 65536
+    if size ~= nil and size > n then f:seek("set", size - n) end
+    local data = f:read("*a")
+    f:close()
+    if data == nil then return nil, "read returned nil" end
+    return data
 end
 
 function Util.remove_file(path)
