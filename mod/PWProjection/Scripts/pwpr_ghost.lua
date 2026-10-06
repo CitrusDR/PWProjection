@@ -36,6 +36,8 @@ local Hud = require("pwpr_hud")
 local Ghost = {}
 
 Ghost.host = nil
+--- ★★★ 2026-10-08: 宿主 actor 路径落盘的文件名（配合下面的 `Ghost.cleanup_leftover_host`）
+Ghost.HOST_FILE = "pwpr_ghost_host.txt"
 Ghost.root = nil
 Ghost.components = {}       -- 组 key -> component（静态网格用 mesh_path，骨骼网格用 mesh_path\1序号）
 Ghost.skel_list = {}        -- 骨骼网格的 {comp=,rx=,ry=,rz=,yaw=} 列表（不能实例化，逐件设变换）
@@ -51,6 +53,114 @@ Ghost.stats = { components = 0, failed_components = 0, instances = 0,
                 material_missing = 0, material_readback = nil }
 
 -- --------------------------------------------------------------------------
+-- --------------------------------------------------------------------------
+-- ★★★ 2026-10-08 **启动清扫: 上次会话残留的宿主 actor**
+-- --------------------------------------------------------------------------
+-- 背景（玩家实测）: 在「模组选项」里点保存 ⇒ `restart_mod` 重载我们的 Mod
+--   ⇒ Lua 侧 `Ghost.host` 丢了，但**世界里的宿主 actor 和它的投影网格还在**
+--   ⇒ 现象: "投影关不掉 / 按 K 只说还没加载" ✗
+-- 做法: 生成宿主时把它的 `GetFullName()` 路径写进 `pwpr_ghost_host.txt`；
+--   启动时读回 → `StaticFindObject(path)` → **校验是同一个对象** → `K2_DestroyActor()` ✓
+-- 返回: 销毁数量（0 = 没有残留）
+function Ghost.cleanup_leftover_host()
+    local n = 0
+    local path = Util.join(Util.script_dir, Ghost.HOST_FILE)
+    local f = io.open(path, "rb")
+    if f == nil then
+        -- ★ 没有记录文件 = 上次那个投影是**旧版本**放的（旧版不写这个文件）⇒ 找不到是正常的
+        Ghost.cleanup_note = "没有 " .. Ghost.HOST_FILE .. "（上次的投影可能是旧版本放的）"
+        return 0
+    end
+    local full = f:read("*a") or ""
+    f:close()
+    -- 文件里是两行: ① `GetFullName()` ② `GetName()`
+    local line1, line2 = tostring(full):match("^([^\r\n]*)[\r\n]+([^\r\n]*)")
+    local want_name = line2
+    full = (line1 or tostring(full)):gsub("%s+$", "")
+    if want_name ~= nil then want_name = tostring(want_name):gsub("%s+$", "") end
+    -- ★★★ 2026-10-08 晚修正: 记录文件里第二行可能是**空的**（`GetName()` 没取到）
+    --   ⇒ 那就**从全路径的尾巴取名字**（`…:PersistentLevel.Actor_2147465919` → `Actor_2147465919`）✓
+    --   这样**旧格式（只有一行）的记录也能救回来**，不必重新放一次投影 ✓
+    if want_name == nil or want_name == "" then
+        want_name = full:match("([^%.:]+)$")
+    end
+    -- ★★★ 2026-10-08 修正: **不再靠 `StaticFindObject(全路径)`** ——
+    --   实测它对这种动态 spawn 出来的 actor 会返回**假对象**（`GetFullName()` 给出 nil）
+    --   ⇒ 改用 **「类 + 名字」匹配**: 宿主是 `world:SpawnActor(/Script/Engine.Actor, …)` spawn 的，
+    --     所以 `FindAllOf("Actor")` 能枚举到它；再用 `GetName()` 精确对上那一个才销毁 ✓
+    if want_name ~= nil and want_name ~= "" then
+        local lst = nil
+        pcall(function() lst = FindAllOf("Actor") end)
+        local total, samples = 0, {}
+        if type(lst) == "table" then
+            total = #lst
+            for i = 1, #lst do
+                local o = Util.unwrap(lst[i])
+                if o ~= nil then
+                    -- ★★ 2026-10-08 晚: 不再用 `GetName()`（实测读出来是空 ✗），
+                    --   改用我们自己的 `Util.full_name()`（内部 pcall 包了 `GetFullName`）✓
+                    local fn2 = Util.full_name(o)
+                    if fn2 ~= nil then
+                        if #samples < 3 then samples[#samples + 1] = tostring(fn2):sub(-60) end
+                        -- **包含匹配**（记录的是尾巴/名字，这里只要求出现在全名里）
+                        if tostring(fn2):find(want_name, 1, true) ~= nil then
+                            if Util.usable(o) then
+                                pcall(function() o:K2_DestroyActor() end)
+                                n = 1
+                                Ghost.cleanup_note = "已销毁残留宿主（全名含 " .. want_name .. "）"
+                            else
+                                Ghost.cleanup_note = "找到匹配对象但 usable=false"
+                            end
+                            break
+                        end
+                    end
+                end
+            end
+        end
+        if n == 0 and Ghost.cleanup_note == nil then
+            Ghost.cleanup_note = string.format(
+                "FindAllOf(\"Actor\") 共 %d 个，没有全名包含 %s 的（前几个全名: %s）",
+                total, want_name, table.concat(samples, " | "):sub(1, 180))
+        end
+        pcall(function() os.remove(path) end)
+        return n
+    end
+    -- 兜底: 旧格式（只有一行全路径）⇒ 还是试一次 `StaticFindObject`，但**必须校验真对象**
+    if full == "" or full == "none" then
+        Ghost.cleanup_note = "记录文件是空的"
+        pcall(function() os.remove(path) end)
+        return 0
+    end
+    local obj = nil
+    pcall(function() obj = StaticFindObject(full) end)
+    obj = Util.unwrap(obj)
+    if obj == nil then
+        Ghost.cleanup_note = "StaticFindObject 找不到（换过地图？）: " .. full:sub(1, 90)
+        pcall(function() os.remove(path) end)
+        return 0
+    end
+    local got = nil
+    pcall(function() got = obj:GetFullName() end)
+    if tostring(got) ~= full then
+        -- ★ `StaticFindObject` 会给出假对象（踩坑记录）⇒ 名字对不上就不碰它
+        Ghost.cleanup_note = "名字对不上（拿到假对象）⇒ 不销毁: " .. tostring(got):sub(1, 90)
+        pcall(function() os.remove(path) end)
+        return 0
+    end
+    -- ★★ 2026-10-08 修正: 这里原来用 `Util.valid`（严格 IsValid）——
+    --   但**实测反复证明 IsValid 会把好对象判为无效**（见 pwpr_util.lua 的说明）
+    --   ⇒ 用宽松判据 `Util.usable`（IsValid 通过 **或** GetFullName 能调通）✓
+    if Util.usable(obj) then
+        pcall(function() obj:K2_DestroyActor() end)
+        n = 1
+        Ghost.cleanup_note = "已销毁残留宿主: " .. full:sub(1, 90)
+    else
+        Ghost.cleanup_note = "对象不可用（usable=false）⇒ 没销毁: " .. full:sub(1, 90)
+    end
+    pcall(function() os.remove(path) end)
+    return n
+end
+
 -- 门禁
 -- --------------------------------------------------------------------------
 
@@ -321,6 +431,27 @@ local function acquire_host(caps)
     end
 
     Ghost.host = actor
+    -- ★★★ 2026-10-08: **把宿主 actor 的路径记到文件里** ——
+    --   为什么需要: 「UI 里点保存」会**重载我们的 Mod** ⇒ Lua 里的 `Ghost.host` 丢了，
+    --   但世界里那个宿主 actor（和它上面的投影网格）**还在** ⇒ 玩家看到"投影关不掉" ✗
+    --   （按 K 只会说"还没加载蓝图"）。宿主是 `SpawnActor` 直接生成的、**没有名字**，
+    --   重载后无法在世界里认出来 ⇒ 必须在生成时把它的路径落盘，下次启动按路径找回并销毁 ✓
+    pcall(function()
+        local full = nil
+        pcall(function() full = actor:GetFullName() end)
+        if type(full) == "string" and full ~= "" then
+            -- ★ 第二行记 **对象名**（`Actor_2147…`）: 它在本会话内稳定，
+            --   而 `StaticFindObject(全路径)` 实测**给假对象**（`GetFullName` 返回 nil）✗
+            --   ⇒ 清扫时改用「类 + 名字」匹配: `FindAllOf("Actor")` → 比 `GetName()` ✓
+            local nm = nil
+            pcall(function() nm = actor:GetName() end)
+            local f = io.open(Util.join(Util.script_dir, Ghost.HOST_FILE), "wb")
+            if f ~= nil then
+                f:write(full .. "\n" .. tostring(nm or ""))
+                f:close()
+            end
+        end
+    end)
 
     -- 根组件（失败也能继续：组件都用绝对变换）
     local class_scene = find_class("/Script/Engine.SceneComponent")

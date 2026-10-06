@@ -222,6 +222,42 @@ function Hud.is_live(v)
     return fn:find("/Engine/Transient", 1, true) ~= nil
 end
 
+--- ★★★ 2026-10-08 **启动清扫: 上次会话残留的提示控件**
+---
+--- 背景（玩家实测）: 在「模组选项」里点保存 ⇒ `restart_mod` 重载我们的 Mod
+---   ⇒ Lua 里那些控件引用（`Hud.styles[...].widget`）全丢了，但控件**还挂在视口上**
+---   ⇒ 现象: "屏幕提示语永远不消失" ✗
+--- 做法: 用配置里的控件类名找活实例（`FindAllOf`）→ **只处理"在视口里"的那些** →
+---   `SetVisibility(Collapsed)` + `RemoveFromParent` ✓
+--- ⚠️ 那个类**是游戏自己的类**（我们借用），启动瞬间同类实例里可能混着游戏自己的一条消息
+---   ⇒ 会连带把它收掉（不崩，只是少一条提示）—— 所以日志里会写真收掉了几个。
+--- 返回: 收回数量
+function Hud.cleanup_leftovers()
+    local cls = nil
+    pcall(function() cls = Config.get("notify_widget_class_name") end)
+    if type(cls) ~= "string" or cls == "" then return 0 end
+    local lst = nil
+    pcall(function() lst = Hud.find_widgets(cls) end)
+    if type(lst) ~= "table" then return 0 end
+    local n = 0
+    for i = 1, #lst do
+        local w = lst[i]
+        if w ~= nil and Hud.in_viewport(w) then
+            pcall(function() w:SetVisibility(Hud.VIS_COLLAPSED) end)
+            pcall(function() w:RemoveFromParent() end)
+            n = n + 1
+        end
+    end
+    pcall(function()
+        local kinds = { "normal", "error" }
+        for i = 1, #kinds do
+            local st = Hud.styles[kinds[i]]
+            if st ~= nil then st.widget, st.textblocks = nil, nil end
+        end
+    end)
+    return n
+end
+
 --- 找某个类的存活实例。返回 列表, 原因
 function Hud.find_widgets(class_name)
     if type(class_name) ~= "string" or class_name == "" then

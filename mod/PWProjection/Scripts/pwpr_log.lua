@@ -39,8 +39,31 @@ function Log.path_of(name)
 end
 
 --- 只进缓冲，不写控制台
+-- ★★ 2026-10-06: 输出层"键名翻译"（默认键名 → 玩家实际绑的键）
+--
+-- 为什么放这一层（而不是去改 100+ 处字符串）:
+--   全项目的提示文本都写着**默认键名**（`按 H` / `[F7]` / `H=resnap`）。
+--   玩家一旦在配置里改键，这些文本就会**说错键**。逐个改成查表成本高、还容易漏，
+--   所以在**日志输出这一层**统一翻译一次（`Keys.translate`）。
+-- ★ 只有"确实改过键"时才工作（`rebound_count == 0` ⇒ 原样返回，零开销、行为不变）。
+-- ★ **黑匣子（`Log.solid`）不翻译** —— 那是排查用的原始证据，必须逐字稳定。
+Log.translator = nil
+
+--- 装翻译器（由 `main.lua` 在 `Keys.resolve()` 之后注入）
+function Log.set_translator(fn)
+    Log.translator = fn
+end
+
+local function tr(s)
+    if Log.translator == nil then return s end
+    local ok, out = pcall(Log.translator, s)
+    if ok and type(out) == "string" then return out end
+    return s
+end
+
 function Log.line(s)
-    Log.buffer[#Log.buffer + 1] = tostring(s)
+    s = tr(tostring(s))
+    Log.buffer[#Log.buffer + 1] = s
     if #Log.buffer > Log.buffer_limit then
         table.remove(Log.buffer, 1)
     end

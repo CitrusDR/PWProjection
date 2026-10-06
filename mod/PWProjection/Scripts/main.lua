@@ -89,6 +89,12 @@ local Probe    = require("pwpr_probe")
 local Hud      = require("pwpr_hud")
 local Notify   = require("pwpr_notify")
 local Sched    = require("pwpr_sched")
+local Options  = require("pwpr_options")
+local Unipal   = require("pwpr_unipal")
+-- ★ 按键绑定（2026-10-06）: 解析/校验在 `pwpr_keys.lua`。
+--   ⚠️ require 放这里（文件顶部）—— `F7` 的状态输出（比下面的绑定段早）也要用它；
+--      放到绑定段附近会让前面那处引用变成全局 nil（luacheck 规矩 [8] 抓过一次）。
+local Keys     = require("pwpr_keys")
 
 local TAG = Util.TAG
 
@@ -474,13 +480,13 @@ local function do_library_next()
 
     local bp, lerr, okv, errors, warnings = Library.load(entry.file)
     if bp == nil then
-        Log.emit("!! 加载 " .. tostring(entry.file) .. " 失败: " .. tostring(lerr))
+        Log.emit("!! 加载 " .. Library.entry_label(entry) .. " 失败: " .. tostring(lerr))
         Notify.show("加载蓝图失败: " .. tostring(entry.file), "load failed", "error")
         flush_log()
         return
     end
 
-    Log.emit("选中: " .. tostring(entry.file))
+    Log.emit("选中: " .. Library.entry_label(entry))
     if not okv then
         Log.emit(string.format("!! 校验未通过（%d 个错误），仍可预览:", #errors))
         for i = 1, math.min(#errors, 6) do Log.emit("   " .. errors[i]) end
@@ -491,6 +497,8 @@ local function do_library_next()
     end
 
     Session.activate(bp, entry.file)
+    -- ★ 2026-10-06: 记下"带备注"的标签，`F7` 的「当前蓝图」那行会用它
+    Session.bp_label = Library.entry_label(entry)
     -- ★ 换蓝图后清掉"当前那一处"的指认（否则会把新蓝图的位置/进度写到上一张的记录里）
     pcall(function() Resume.current = nil; Placed.forget() end)
     emit_lines(BP.summary_lines(bp, 8))
@@ -509,7 +517,7 @@ local function do_library_next()
         for _ in pairs(bp.stats.types) do n_types = n_types + 1 end
     end
     Notify.show(string.format("已加载蓝图 %s: %d 件 / %d 类型（库共 %d 张，按 K 放投影）",
-        tostring(entry.file), #bp.buildings, n_types, n),
+        Library.entry_label(entry), #bp.buildings, n_types, n),
         string.format("loaded %s: %d buildings", tostring(entry.file), #bp.buildings))
     flush_log()
 end
@@ -1395,10 +1403,18 @@ local function do_ghost_toggle()
         Log.emit("  （里面是真实的网格资产名，可据此补 pwpr_meshmap.json）")
     end
     Log.emit("")
-    Log.emit("微调: 方向键（F9 切 移动/旋转/材质）  小键盘 8/2 4/6 9/3 挪  +/- 旋转  5 复位  0 换步长")
+    Log.emit(string.format(
+        "微调: 方向键（%s 切 移动/旋转/材质）  小键盘 8/2 4/6 9/3 挪  +/- 旋转  5 复位  0 换步长",
+        Keys.label("mode")))
     -- ★ 2026-09-29 更正文案: 这里原来写"放下时已自动吸"，但 `snap_on_place` 默认已关
     --   （投影对齐会和手动微调打架，见 踩坑记录 §42）⇒ 现在写清楚"要按 U"。
-    Log.emit("分层: L      换一处记录: U（这张蓝图存了多处放置记录时用）      重新定位到脚下: H      收起: 再按 K")
+    -- ★ 2026-10-06: **键名一律从 `Keys.label()` 取**（玩家改了键这里就跟着变；
+    --   以前写死 `L`/`U`/`H`/`K`，玩家把 resnap 改成 G 之后这里还说 "H"，玩家当场发现）。
+    Log.emit(string.format(
+        "分层: %s      换一处记录: %s（这张蓝图存了多处放置记录时用）      "
+        .. "重新定位到脚下: %s      收起: 再按 %s",
+        Keys.label("layer"), Keys.label("site_cycle"),
+        Keys.label("resnap"), Keys.label("ghost")))
 
     -- ★ 屏幕提示: 放下投影先立刻给一行（别让玩家在自动对齐那一两秒里干等），
     --   吸附完成后**再发一行**（用 show_force 忽略节流 —— 见下面的包装函数）。
@@ -1414,9 +1430,17 @@ local function do_ghost_toggle()
     --    · U = 在这张蓝图的多处记录之间切换（**有记录时才提示**，没有就只提 H）
     local n_prog_sites = 0
     pcall(function() n_prog_sites = #Resume.progress_sites(Session.bp_file) end)
-    local hint = resumed and "   （沿用上次位置；H 改到脚下" or "   （H 移到脚下"
+    -- ★ 2026-10-06: **键名从 `Keys.label()` 取**（玩家改了键，这里必须跟着变 ——
+    --   玩家实测反馈: 把 resnap 改成 G 之后，这条提示还说"（H 移到脚下）"）。
+    local k_resnap = Keys.label("resnap")
+    if k_resnap == "" then k_resnap = "(未绑)" end
+    local k_site = Keys.label("site_cycle")
+    if k_site == "" then k_site = "(未绑)" end
+    local hint = resumed
+        and string.format("   （沿用上次位置；%s 改到脚下", k_resnap)
+        or string.format("   （%s 移到脚下", k_resnap)
     if n_prog_sites >= 1 then
-        hint = hint .. string.format("；U 换一处记录，共 %d 处）", n_prog_sites)
+        hint = hint .. string.format("；%s 换一处记录，共 %d 处）", k_site, n_prog_sites)
     else
         hint = hint .. "）"
     end
@@ -1810,7 +1834,10 @@ local function do_help()
     --   现在加键只改 pwpr_notify.lua 里的 KEYS 一张表。
     emit_lines(Notify.key_lines())
     Log.line("")
-    Log.line("投影材质（F9 进 material 模式，然后用 ← / → 切换）:")
+    -- ★ 模式键名从 `pwpr_keys.lua` 取（2026-10-06: 它可以被玩家改；以前这里写死 F9）
+    local mode_key = Keys.label("mode")
+    if mode_key == "" then mode_key = "(未绑)" end
+    Log.line(string.format("投影材质（%s 进 material 模式，然后用 ← / → 切换）:", mode_key))
     for i = 1, #Ghost.MATERIAL_MODES do
         local m = Ghost.MATERIAL_MODES[i]
         local mark = (m == Ghost.material_mode) and "  <- 当前" or ""
@@ -1821,8 +1848,8 @@ local function do_help()
         .. " 可写进 config 的 ghost_material，不进循环）")
     Log.line("")
     Log.line("方向键 + 模式（不用修饰键，没有小键盘也能用）:")
-    dual("  F9              切换方向键模式",
-         "  F9            cycle arrow mode")
+    dual(string.format("  %-15s 切换方向键模式", mode_key),
+         string.format("  %-13s cycle arrow mode", mode_key))
     dual("  当前模式: " .. tostring(PLACE_MODE_LABEL[place_mode] or place_mode),
          "  current mode = " .. tostring(place_mode))
     Log.line("")
@@ -1847,6 +1874,12 @@ local function do_help()
     Log.line("  " .. Hud.describe())
     emit_lines(Session.status_lines())
     Log.line("  " .. Ghost.describe())
+    -- ★ 2026-10-06: 按键（可配置）—— 改过键/有异常时这里能直接看到原因
+    emit_lines(Keys.status_lines())
+    -- ★ 2026-10-06: UniPalUI 探针（阶段 A）—— 方案② 能不能走下去就看这几行
+    emit_lines(Unipal.status_lines())
+    -- ★ 2026-10-07: 游戏内设置面板（Mod Options Framework）接入状态
+    emit_lines(Options.status_lines())
     -- ★ 建造吸附（钩子）: 一眼看出"钩子注册上没有、见过几次请求、吸上几件"
     emit_lines(BuildSnap.status_lines())
     Log.line("  " .. Placed.status_line())
@@ -1857,6 +1890,9 @@ local function do_help()
         or "还没用过（按 U；放下投影时的自动对齐默认已关）"))
     local gate_ok, gate_why = Ghost.check_gate(nil)
     Log.line(string.format("  投影门禁: %s (%s)", tostring(gate_ok), tostring(gate_why)))
+    -- ★ 2026-10-06: 两张"文件名/编码"的证据行 —— 中文文件名到底能不能读，看这里
+    Log.line("  " .. Util.locale_line())
+    Log.line("  " .. Library.non_ascii_line())
     Log.line("")
     Log.line("屏幕提示（待办 1）:")
     emit_lines(Notify.status_lines())
@@ -2033,6 +2069,17 @@ local function do_material_cycle(dir)
     flush_log()
 end
 
+-- ★★★ 2026-10-06: **按键全部可配置**（玩家要求）——
+--   动作 → 配置键 → 生效键名的解析/校验都在 `pwpr_keys.lua`（文件顶部已 require）。
+--   ⚠️ 解析必须等 `Config.load()` 之后（见下面"启动"一节里的 `Keys.resolve`）。
+local key_notes = {}
+
+--- 把一个动作绑到"解析出来的键"上（没绑上就跳过，日志已有说明）
+-- ★ 定义在 `try_bind` **之后**（否则闭包看到的是全局 nil）
+local bind_action
+-- ★ 2026-10-08: UI 的"快捷键总开关"关掉时置 true（日志里说明"一个键都没注册"）
+local hotkeys_off = false
+
 -- ---------------------------------------------------------------------------
 -- 热键注册
 -- ---------------------------------------------------------------------------
@@ -2069,6 +2116,36 @@ local function try_bind(name, key_name, modifiers, fn)
     return true
 end
 
+--- ★ 2026-10-06: 按"配置解析出来的键"绑定一个动作（`pwpr_keys.lua` 给结果）
+--- 说明: `try_bind` 已经做了"键名合法性 + 注册后复核"，这里的判空只是防止"未绑"被当成键名。
+bind_action = function(id, fn)
+    local a = Keys.by_id(id)
+    local kn = Keys.label(id)
+    if a == nil then return false end
+    -- ★ 2026-10-08: **UI 里的"快捷键总开关"关掉 ⇒ 所有快捷键都不注册**（玩家要求）
+    if not Options.hotkeys_enabled() then
+        hotkeys_off = true
+        return false
+    end
+    -- ★ 2026-10-07: **有意不绑定**（UI 里关掉了开关 / 配置写 `none`）⇒ 静静跳过，
+    --   不算"绑定失败"（否则 F7 会刷一片假的失败项）。
+    if Keys.is_unbound(id) then
+        Log.emit(string.format("按键 %s: 有意不绑（UI 里关掉了开关 / 配置写了 none）", id))
+        return false
+    end
+    if kn == "" then
+        failed[#failed + 1] = a.cfg .. "(没有可用键 —— 见上面的按键日志)"
+        return false
+    end
+    -- ★ 2026-10-07: 玩家在「模组选项」里**正在捕获按键**时，跳过我们自己的处理
+    --   （框架文档推荐的 `capture_active()` 用法）—— 否则捕获时会把功能也触发一遍。
+    local wrapped = function(...)
+        if Options.capture_active() then return end
+        return fn(...)
+    end
+    return try_bind(id .. "=" .. kn, kn, {}, wrapped)
+end
+
 -- ---------------------------------------------------------------------------
 -- 启动
 -- ---------------------------------------------------------------------------
@@ -2078,15 +2155,124 @@ print(TAG .. " PWProjection loading (blueprint projection mod)")
 print(TAG .. " BUILD = " .. tostring(Util.BUILD))
 print(TAG .. " ================================================")
 
+-- ★★ UI-3（2026-10-09）: 先接框架（它内部**同步读**框架设置文件）——
+--   这样下面 Config.load 之后就能把 UI 里的**数值**套上去，做到改一次保存就生效 ✓
+pcall(function() Options.load_pre() end)
 local cfg_values, cfg_note = nil, "(读取失败)"
 pcall(function() cfg_values, cfg_note = Config.load(Util.script_dir) end)
 Log.emit("配置: " .. tostring(cfg_note))
+-- ★ UI-3: 把 UI 里的数值套到已载入的配置上（4 个数值: 采集范围/微调步长/旋转角/分层间距）✓
+pcall(function()
+    local nnum = Options.apply_numeric_overrides()
+    if nnum ~= nil and nnum > 0 then
+        Log.emit(string.format("UI 数值: 套用 %d 个（来自「模组选项」）", nnum))
+    end
+end)
+-- ★★ 游戏内设置面板: 现在 `Config` 已载入 ⇒ 这里才做**注册**（让开关 `options_framework` 作数 ✓；
+--   `load_pre` 那一步已经先把框架里的值同步读进来了 ✓）
+if Config.get("options_framework") ~= false then
+    pcall(function() Options.init() end)
+end
 -- ★ 配置文件写法有问题时要**一眼看到**（玩家 2026-09-29 实测踩过:
 --   往文件里另起了一个 `{}` 加键 ⇒ 旧版严格解析会**整份退回默认值**，
 --   连 ghost_enabled 都掉回 false、投影被锁，而他只看到"我的配置没生效"。）
 if Config.multi_object_warn ~= nil then
     Log.emit("!! " .. tostring(Config.multi_object_warn))
     print(TAG .. " !! config has multiple top-level {} objects (merged this time)")
+end
+
+-- ---------------------------------------------------------------------------
+-- ★★★ 2026-10-08 **启动清扫: 上次会话的残留**（修"重载后投影关不掉 / 提示语不消失"）
+--
+-- 为什么会残留: 在「模组选项」里点保存 ⇒ `restart_mod` **重载我们的 Mod**
+--   ⇒ Lua 里的引用全丢（没有已加载蓝图、也没有控件/宿主 actor 的句柄），
+--     但**世界里的投影网格和那个提示控件还在** ✗
+-- 做法: ① 宿主 actor 的路径在生成时就落了盘 ⇒ 按路径找回并销毁（`Ghost.cleanup_leftover_host`）；
+--       ② 提示控件按类名找活实例、只收"在视口里"的那些（`Hud.cleanup_leftovers`）。
+-- 延迟 3 秒（等世界稳定），走游戏线程；全程 pcall，失败只记一行日志 ✓
+pcall(function()
+    Sched.game_thread(function()
+        pcall(function()
+            local n1, n2 = 0, 0
+            if Config.get("ghost_enabled") ~= false then
+                n1 = Ghost.cleanup_leftover_host() or 0
+            end
+            if Config.get("hud_enabled") ~= false then
+                n2 = Hud.cleanup_leftovers() or 0
+            end
+            if n1 > 0 or n2 > 0 then
+                Log.emit(string.format(
+                    "启动清扫: 清掉上次会话的残留 —— 投影宿主 %d 个、提示控件 %d 个"
+                    .. "（这些是「保存设置时重载 Mod」留下的）", n1, n2))
+                -- ★★ 2026-10-09 玩家要求: 清理完**给玩家一条提示**，说明接下来该做什么
+                --   （他刚在 UI 里改了设置 ⇒ 我们是"被重载"的 ⇒ 投影/蓝图都没了）
+                --   ★ 2026-10-09 晚（玩家反馈"提示闪一下就没了"）: **延后到 12 秒**再显示 ——
+                --     刚重载完那几秒玩家通常还在 Esc 菜单/地图切换里，提示会被那些界面盖掉/冲掉 ✗
+                pcall(function()
+                    Sched.game_thread(function()
+                        pcall(function()
+                            Notify.show(
+                                "设置已更新 ⇒ 请重新加载蓝图并按投影键；同一处建造进度会自动续上",
+                                "settings applied: reload blueprint and project again")
+                        end)
+                    end, 9000)
+                end)
+            end
+            -- ★ 不管有没有清掉，都写一行原因（排查用：这次就是靠它看出"旧版没留路径"）
+            if n1 == 0 and type(Ghost.cleanup_note) == "string" then
+                Log.emit("启动清扫（投影）: 没清到 —— " .. Ghost.cleanup_note)
+            end
+        end)
+    end, 3000)
+end)
+
+-- ---------------------------------------------------------------------------
+-- ★★ 游戏内设置面板（Mod Options Framework）—— 2026-10-07 起
+--   · 纯 Lua 调用（`register_when_ready` 自己处理"框架还没就绪"的时序）⇒ 启动期安全 ✓
+--   · 框架没装 / 注册失败 ⇒ **只记一行日志**，其余功能完全照旧（内置 JSON 配置）✓
+if Config.get("options_framework") ~= false then
+    pcall(function() Log.emit(Options.status_lines()[1]) end)
+    -- ★★ 2026-10-08: **UI 里选的"方向键默认模式"接到运行时**（玩家实测 #2 的后半）
+    --   UI 里那一行是"启动/应用时的默认模式"；游戏内按切换键仍可随时循环切换 ✓
+    pcall(function()
+        local am = Options.arrow_mode
+        if type(am) == "string" and am ~= "" then
+            for i = 1, #PLACE_MODES do
+                if PLACE_MODES[i] == am then
+                    place_mode = am
+                    Log.emit(string.format("方向键默认模式: 采用「模组选项」里的设置 = %s",
+                        tostring(PLACE_MODE_LABEL[am] or am)))
+                    break
+                end
+            end
+        end
+    end)
+end
+
+-- ★★★ 2026-10-06: **解析按键绑定**（配置 → 生效键名）—— 必须在 `Config.load()` 之后、
+--   在所有 `bind_action(...)` 之前。校验规则/限制写在 `pwpr_keys.lua` 的文件头。
+do
+    -- ★ 按键**单独一个文件**（`Scripts\pwpr_keys.json`）: 不存在会自动生成一份
+    pcall(function() Keys.load_file(Util.script_dir) end)
+    Log.emit(Keys.file_line())
+
+    local _, notes = Keys.resolve({
+        is_registered = function(kn)
+            local key = nil
+            pcall(function() key = Key[kn] end)
+            if key == nil then return false end
+            local got = false
+            pcall(function() got = IsKeyBindRegistered(key, {}) == true end)
+            return got
+        end,
+    })
+    key_notes = notes or {}
+    -- 让日志/提示里的"默认键名"自动跟着玩家改的键走（见 pwpr_log.lua 的翻译层）
+    Log.set_translator(function(s) return Keys.translate(s) end)
+    Log.emit("按键绑定: " .. Keys.status_line())
+    Log.line("  " .. Keys.file_line())
+    for i = 1, #Keys.bind_lines() do Log.line(Keys.bind_lines()[i]) end
+    for i = 1, #key_notes do Log.emit("  [keys] " .. key_notes[i]) end
 end
 
 Sched.detect()
@@ -2165,6 +2351,15 @@ local lib_ok, lib_err = Library.init(bp_dir)
 if not lib_ok then
     Log.emit("!! 蓝图库目录不可用: " .. tostring(lib_err))
 end
+-- ★★★ 2026-10-06（玩家要求"先试试中文文件名能不能读"）:
+--   在**读任何文件之前**先试把 C locale 切到 UTF-8 —— 成功了的话
+--   Windows 上 Lua 的 `io.open` 就能打开中文名的蓝图。
+--   只是"试"（失败不影响任何功能），结果写进日志与 `F7`；用 `locale_utf8` 可以关。
+pcall(function()
+    Util.try_utf8_locale(Config.get("locale_utf8") ~= false)
+end)
+Log.emit(Util.locale_line())
+
 -- 刷新蓝图库索引。整体 pcall：这一步失败绝不能拖垮启动流程。
 -- 默认不扫目录（不 spawn cmd.exe），只读 index.txt。
 local n_entries, lib_note = 0, "(未刷新)"
@@ -2173,6 +2368,22 @@ pcall(function()
         Config.get("library_scan_on_refresh") == true)
 end)
 Log.emit(string.format("蓝图库: %d 张   %s", n_entries, tostring(lib_note)))
+
+-- ★★ 实机自检: 库里如果有"中文文件名"的条目，就真去 `io.open` 一下 ——
+--   这是回答"中文文件名到底能不能读"的**唯一证据**（不靠猜）。
+--   结果同时进日志与 `F7`。
+do
+    local na_total, na_ok, na_fail = 0, 0, {}
+    pcall(function() na_total, na_ok, na_fail = Library.probe_non_ascii_names() end)
+    Log.emit(Library.non_ascii_line())
+    if na_total > 0 and (na_ok or 0) < na_total then
+        for i = 1, math.min(#na_fail, 3) do
+            Log.emit("   ✗ " .. tostring(na_fail[i]))
+        end
+        Log.emit("   ⇒ 这些条目打不开: 把文件名改成英文/数字，中文说明写到 index.txt 的备注列")
+        Log.emit("     （index.txt 每行格式: 文件名|备注）")
+    end
+end
 
 -- 网格覆盖表（可选）。读取失败不影响任何功能。
 local n_ov, ov_note = 0, "(未读取)"
@@ -2355,8 +2566,8 @@ end
 -- 绑定
 -- ---------------------------------------------------------------------------
 
-try_bind("F7=help",        "F7", {}, on_direct("help", do_help))
-try_bind("F8=reload-cfg",  "F8", {}, on_direct("reload-config", do_reload_config))
+bind_action("help",   on_direct("help", do_help))
+bind_action("reload", on_direct("reload-config", do_reload_config))
 -- ★ 手动收起屏幕提示: 函数保留（Hud.hide_now），但**不绑定按键**。
 --
 -- 2026-09-27 玩家反馈与决定:
@@ -2370,26 +2581,28 @@ try_bind("F8=reload-cfg",  "F8", {}, on_direct("reload-config", do_reload_config
 -- ★ 采集: 只有**一个**键（`Y`）。"玩家附近 / 全部"由配置决定 ——
 --   `capture_radius_m > 0` = 附近；`= 0` = 全部建筑。
 --   （玩家 2026-09-29: "保留一个采集键就好了"。原来的 U=全部 已去掉。）
-try_bind("Y=capture", "Y",  {}, on_game_thread("capture", do_capture_key))
-try_bind("J=library-next", "J",  {}, on_direct("library-next", do_library_next))
-try_bind("K=ghost-toggle", "K",  {}, on_game_thread("ghost-toggle", do_ghost_toggle_key))
-try_bind("L=layer-cycle",  "L",  {}, on_game_thread("layer-cycle", do_layer_cycle))
-try_bind("H=resnap",       "H",  {}, on_game_thread("resnap", do_resnap))
--- ★ U = 在这张蓝图的多处放置记录之间切换（玩家 2026-09-29 定稿）。
---   ★★ 为什么是 `U` 而不是 `B`: **`B` 是游戏自己的建造模式入口**（玩家指出:
+-- ★★★ 2026-10-06: 以下 **11 个主键全部走配置**（`pwpr_config.json` 的 `key_*`）——
+--   键名由 `Keys.resolve()` 决定（校验失败会自动回退默认值并在日志/F7 里说明）。
+--   想加新动作: 在 `pwpr_keys.lua` 的 `Keys.ACTIONS` 里加一行 + `pwpr_config.lua` 加默认值，
+--   然后在这里 `bind_action("<id>", ...)`（跑 `python tools\check_keys.py` 会核对三处一致）。
+bind_action("capture", on_game_thread("capture", do_capture_key))
+bind_action("library", on_direct("library-next", do_library_next))
+bind_action("ghost",   on_game_thread("ghost-toggle", do_ghost_toggle_key))
+bind_action("layer",   on_game_thread("layer-cycle", do_layer_cycle))
+bind_action("resnap",  on_game_thread("resnap", do_resnap))
+-- ★ 换一处记录（玩家 2026-09-29 定稿）。
+--   ★★ 为什么默认是 `U` 而不是 `B`: **`B` 是游戏自己的建造模式入口**（玩家指出:
 --     「B 键是游戏自用的，建筑模式入口」）—— 占游戏自己的键会互相打架，
---     这类键一律不碰（规矩 4c）。
+--     这类键一律不碰（规矩 4c），`pwpr_keys.lua` 的 `Keys.RESERVED` 里也会拒绝它。
 --   ★ 原来 `U` 是"投影对齐到附近原建筑"—— 有了位置记忆之后它基本用不上
 --     （而且那条路要枚举关卡建筑），所以让位给这个新功能，并改成**默认不绑键**
 --     （想用的人自己在配置里设 `snap_key`，见下面那段）。
-try_bind("U=site-cycle",   "U",  {}, on_game_thread("site-cycle", do_site_cycle))
-try_bind("N=probe",        "N",  {}, on_game_thread("probe", do_probe))
--- ★ O: 屏幕提示通道探测（S9）。
---   ★ 必须走 on_game_thread: S9 要读引擎（FindAllOf / 反射 / 构造 FText）。
---   本项目的规矩是"**只要碰引擎就走游戏线程**"，只读也一样 ——
---   按 Y 采集也是只读，同样走游戏线程。在非游戏线程读引擎对象
---   正是早期几次崩溃的成因之一。
-try_bind("O=notify-probe", "O",  {}, on_game_thread("notify-probe", do_probe_ui))
+bind_action("site_cycle", on_game_thread("site-cycle", do_site_cycle))
+bind_action("probe",   on_game_thread("probe", do_probe))
+-- ★ 屏幕提示通道探测（S9）: 必须走 on_game_thread（要读引擎）。
+bind_action("notify_probe", on_game_thread("notify-probe", do_probe_ui))
+-- ★ 模式键（`key_mode`，默认 `F9`）**故意不在这里绑** —— 它的处理函数 `do_mode_cycle`
+--   定义在下面（方向键那一节），这里绑会让闭包看到 nil（line 2609 附近才是它的位置）。
 
 try_bind("NUM_8=fwd",   "NUM_EIGHT", {}, on_game_thread("fwd",
     function() do_nudge("fwd") end))
@@ -2435,18 +2648,34 @@ end
 --              属于"会碰引擎对象"的路，默认不占键 = 平时不会误按到它。
 --   想继续用: 在 `pwpr_config.json` 里设 `"snap_key": "G"`（或别的空闲字母），
 --   **改完要重启游戏**（键位只在启动时注册，按 F8 不重绑）。
---   ⚠️ 不能设成 `U`（现在是换一处记录）或 `B`（**游戏自己的建造模式入口**）——
---      这里会把这两个值当成"没设"，并在日志里说明。
+--   ⚠️ 不能设成"游戏占用"的键（`B`）或**已经被别的动作占用的键**（含 `key_site_cycle` 的
+--      `U`）—— 这两条现在都走**同一套校验**（`Keys.RESERVED` + `Keys.map`），
+--      不满足就当"没设"并说明原因。★ 2026-10-06 统一: 以前这里只硬编码挡了 `U`/`B` 两个值，
+--      玩家把 `key_*` 改到某个字母后，`snap_key` 填同一个字母会**静默撞键**。
 local snap_key = Config.get("snap_key")
 if type(snap_key) ~= "string" then snap_key = "" end
 snap_key = string.upper(snap_key)
-if snap_key == "U" or snap_key == "B" then
-    Log.emit(string.format(
-        "!! snap_key 设成了 %s —— 但 %s 现在另有用途（%s）⇒ 这次**不绑对齐键**。"
-        .. "想用投影对齐请换一个空闲字母（例 G）",
-        snap_key, snap_key,
-        (snap_key == "U") and "换一处记录" or "游戏自己的建造模式入口"))
-    snap_key = ""
+if snap_key ~= "" then
+    local why = nil
+    if not Keys.key_exists(snap_key) then
+        why = "Key 枚举里没有这个键名"
+    elseif Keys.RESERVED[snap_key] ~= nil then
+        why = "游戏自己占用（" .. tostring(Keys.RESERVED[snap_key]) .. "）"
+    else
+        for i = 1, #Keys.ACTIONS do
+            local a = Keys.ACTIONS[i]
+            if Keys.label(a.id) == snap_key then
+                why = string.format("已经用于「%s」（%s）", a.id, a.cfg)
+                break
+            end
+        end
+    end
+    if why ~= nil then
+        Log.emit(string.format(
+            "!! snap_key 设成了 %s —— %s ⇒ 这次**不绑对齐键**。想用投影对齐请换一个空闲键",
+            snap_key, why))
+        snap_key = ""
+    end
 end
 if snap_key ~= "" then
     local ok_snap = try_bind("snap=" .. snap_key, snap_key, {},
@@ -2527,8 +2756,41 @@ try_bind("LEFT=arrow",  "LEFT_ARROW",  {}, on_game_thread("arrow-left",
 try_bind("RIGHT=arrow", "RIGHT_ARROW", {}, on_game_thread("arrow-right",
     function() do_arrow("right") end))
 
-try_bind("F9=mode",  "F9",  {}, on_direct("mode-cycle", do_mode_cycle))
-try_bind("F10=mode", "F10", {}, on_direct("mode-cycle2", do_mode_cycle))
+-- ★ 模式键: 走配置（`key_mode`，默认 `F9`）。
+--   ★★ 2026-10-06 玩家要求「F9/F10 都能切模式 ⇒ **改成一个按键**」⇒
+--      `F10` 的历史**别名已删除**（以前两行都绑 `do_mode_cycle`）。现在只有
+--      `key_mode` 这一个键（默认 `F9`；想用 F10 就把配置改成 `"key_mode": "F10"`）。
+bind_action("mode", on_direct("mode-cycle", do_mode_cycle))
+
+-- ---------------------------------------------------------------------------
+-- ★★ UniPalUI 接入探针（2026-10-06）—— 待办 5「方案②」的**最小验证**
+--
+-- 为什么延迟 2.5 秒 + 走游戏线程:
+--   · 启动期是**最不该做额外动作**的时候（本项目为此吃过亏）⇒ 排到启动之后；
+--   · `StaticFindObject` / `FindAllOf` 是**碰引擎**的操作 ⇒ 按规矩走游戏线程。
+-- 阶段 A 全程**只读**（找类/找实例/读 `NumParms`），零风险；
+-- 阶段 B（真的调一次 `UPI_SendNotif`）在配置 `unipal_call_notif = true` 时才做 ——
+--   参数类型只能猜 ⇒ 有崩的可能，所以默认关。详见 `pwpr_unipal.lua` 与
+--   `docs\UniPalUI接入探索.md`。
+if Config.get("unipal_probe") ~= false then
+    pcall(function()
+        Sched.game_thread(function()
+            pcall(function()
+                Unipal.probe()
+                Log.emit("")
+                Log.emit("==== UniPalUI 探针（阶段 A: 只读）====")
+                local lines = Unipal.status_lines()
+                for i = 1, #lines do Log.emit(lines[i]) end
+                if Config.get("unipal_call_notif") == true then
+                    local ok, note = Unipal.try_call_notif("PWProjection 探针: 能收到吗？")
+                    Log.emit(string.format("  [unipal] 阶段 B 调用 UPI_SendNotif: %s —— %s",
+                        ok and "**成功**" or "失败", tostring(note)))
+                end
+                Log.flush()
+            end)
+        end, 2500)
+    end)
+end
 
 -- ---------------------------------------------------------------------------
 -- 启动总结
@@ -2539,10 +2801,17 @@ if #failed > 0 then
     print(TAG .. " BIND FAILED: " .. table.concat(failed, ", "))
 end
 print(TAG .. " ------------------------------------------------")
-print(TAG .. " F7=help F8=reload-cfg  Y=capture  J=next-bp  K=ghost  U=snap")
-print(TAG .. " L=layer H=resnap N=render-probe O=notify-probe")
-print(TAG .. " U=site-cycle  B=game's own build-mode key (never bind)  snap key = unbound by default (config snap_key)")
-print(TAG .. " arrows=action F9=arrow-mode")
+-- ★ 2026-10-06: 这一屏（控制台，纯 ASCII）也改成**按实际生效的键位**打印
+do
+    local parts = {}
+    for _, a in ipairs(Keys.ACTIONS) do
+        local k = Keys.label(a.id)
+        parts[#parts + 1] = string.format("%s=%s", a.id, (k ~= "" and k or "unbound"))
+    end
+    print(TAG .. " keys(configurable): " .. table.concat(parts, "  "))
+end
+print(TAG .. " arrows=action  mode-alias=F10  snap key = unbound by default (config snap_key)")
+print(TAG .. " reserved (game-owned, refused): " .. table.concat(Keys.RESERVED and {} or {}, ","))
 print(TAG .. " ------------------------------------------------")
 
 Log.line("")
@@ -2556,6 +2825,10 @@ Log.line("网格覆盖表: " .. tostring(ov_note))
 Log.line("投影门禁: " .. tostring(gate_ok) .. " " .. tostring(gate_why))
 Log.line("屏幕提示: " .. tostring(Hud.describe()))
 Log.line("已绑定: " .. table.concat(bound, ", "))
+if hotkeys_off then
+    Log.line("★ 快捷键总开关: **已关闭**（在「模组选项 → PWProjection」里关的）"
+        .. " ⇒ 本模组**一个快捷键都没注册**（想用就把它打开并保存）")
+end
 if #failed > 0 then
     Log.line("绑定失败: " .. table.concat(failed, ", "))
 end

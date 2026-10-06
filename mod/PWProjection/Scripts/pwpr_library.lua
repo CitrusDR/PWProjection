@@ -229,11 +229,76 @@ function Library.load(file)
     end
     local full = Library.file_path(file)
     local text, rerr = Util.read_file(full)
-    if text == nil then return nil, "读取失败: " .. tostring(rerr) end
+    if text == nil then
+        -- ★★ 2026-10-06（玩家实测）: 中文文件名在 Windows 下**连打开都做不到**
+        --   （`io.open` 报 `Illegal byte sequence`，一个字节都没读到）。
+        --   这里把原因**说清楚 + 给出两条出路**，别再让玩家对着
+        --   "读取失败" 猜（当时我猜了半天）。
+        if Util.has_non_ascii(file) then
+            return nil, string.format(
+                "读取失败: %s\n"
+                .. "    ★ 这个文件名里有**非 ASCII 字符**（中文）—— Windows 下 Lua 打不开这种名字。\n"
+                .. "    出路①: 把文件改成英文/数字名（中文说明写到 index.txt 的备注列）；\n"
+                .. "    出路②: 若日志里 `文件名编码:` 那行显示已切到 UTF-8（配置 locale_utf8），\n"
+                .. "           那说明这台机器仍不支持 —— 也请改用英文名。",
+                tostring(rerr))
+        end
+        return nil, "读取失败: " .. tostring(rerr)
+    end
     local bp, perr = Json.decode(text)
     if bp == nil then return nil, "JSON 解析失败: " .. tostring(perr) end
     local ok, errors, warnings = BP.validate(bp)
     return bp, nil, ok, errors, warnings
+end
+
+-- --------------------------------------------------------------------------
+-- ★★ 备注（显示名）与"中文文件名能不能读"的自检（2026-10-06 玩家要求）
+-- --------------------------------------------------------------------------
+-- 玩家原话: 「显示名可用的可以加上，不过**原文件名也要显示出来**，在显示原文件名的
+--   基础上，添加一个说明，能相对**比较直观的看出这是备注的内容**」。
+-- ⇒ 列表/提示里的写法: `<文件名>   —— 备注: <显示名>`（只在该条真有备注时才加）。
+function Library.entry_label(entry)
+    if type(entry) ~= "table" then return "(无)" end
+    local file = tostring(entry.file or "?")
+    local name = entry.name
+    if type(name) == "string" and name ~= "" and name ~= file then
+        return string.format("%s   —— 备注: %s", file, name)
+    end
+    return file
+end
+
+--- 这台机器到底能不能打开"中文文件名的蓝图" —— 实机自检（只读，一次）
+--- 返回 total(有非 ASCII 名的条目数), ok_n(能打开的), fail(打不开的说明列表)
+function Library.probe_non_ascii_names()
+    local total, ok_n, fail = 0, 0, {}
+    for i = 1, #Library.entries do
+        local f = Library.entries[i].file
+        if Util.has_non_ascii(f) then
+            total = total + 1
+            local fp, err = nil, nil
+            local full = Library.file_path(f)
+            pcall(function() fp, err = io.open(full, "rb") end)
+            if fp ~= nil then
+                ok_n = ok_n + 1
+                pcall(function() fp:close() end)
+            else
+                fail[#fail + 1] = string.format("%s（%s）", f, tostring(err))
+            end
+        end
+    end
+    Library.non_ascii_total = total
+    Library.non_ascii_ok = ok_n
+    Library.non_ascii_fail = fail
+    return total, ok_n, fail
+end
+
+--- 一行文字（给日志 / F7）: 没有中文名条目时说"没有"
+function Library.non_ascii_line()
+    if Library.non_ascii_total == nil then return "中文文件名: (未自检)" end
+    if Library.non_ascii_total == 0 then return "中文文件名: 库里没有（无需关心）" end
+    return string.format("中文文件名: %d 个（可读 %d，打不开 %d）",
+        Library.non_ascii_total, Library.non_ascii_ok or 0,
+        #(Library.non_ascii_fail or {}))
 end
 
 --- 取"下一个"蓝图，循环
@@ -266,7 +331,8 @@ function Library.list_lines(limit)
     for i = 1, lim do
         local e = Library.entries[i]
         local mark = (i == Library.current) and "->" or "  "
-        out[#out + 1] = string.format("%s [%d] %s", mark, i, tostring(e.file))
+        -- ★ 2026-10-06: 原文件名照旧显示，后面**带上备注**（有备注才加）
+        out[#out + 1] = string.format("%s [%d] %s", mark, i, Library.entry_label(e))
     end
     if #Library.entries > lim then
         out[#out + 1] = string.format("  ... 还有 %d 个", #Library.entries - lim)

@@ -49,34 +49,69 @@ Notify.last_t = nil
 ---   UE4SS 的 RegisterKeyBindAsync(key, {}, fn) 在按住修饰键时照样触发，
 ---   所以 "Alt+↑" 会同时触发 "Alt+↑" 和 "↑" 两个回调（玩家实测报过这个 bug）。
 Notify.KEYS = {
-    { group = "main",   key = "F7",  cn = "帮助 / 当前状态",        en = "help / status" },
-    { group = "main",   key = "F8",  cn = "重载 pwpr_config.json",  en = "reload config" },
-    { group = "main",   key = "Y",   cn = "采集（半径见 capture_radius_m；设 0 = 采全部）", en = "capture" },
-    { group = "main",   key = "J",   cn = "蓝图库: 下一张并加载",    en = "library: next" },
-    { group = "main",   key = "K",   cn = "投影: 放 / 收（放下时自动对齐、并沿用上次位置与进度）", en = "ghost: show/hide" },
-    { group = "main",   key = "L",   cn = "投影: 切分层",            en = "ghost: cycle layer" },
-    { group = "main",   key = "U",   cn = "★ 投影: 换一处记录（同一张蓝图的多处放置记录之间切换）",
+    -- ★ 2026-10-06: 带 `id` 的行 = **按键可配置**的动作 ⇒ 显示时从 `pwpr_keys.lua` 取
+    --   玩家实际生效的键（`Keys.label(id)`），不再是写死的默认键；说明文字仍在这里。
+    --   没带 `id` 的行是小键盘/方向键别名（不进配置，按 规矩 4c 只当"有的话顺便能用"）。
+    { group = "main",   id = "help",        key = "F7",  cn = "帮助 / 当前状态",        en = "help / status" },
+    { group = "main",   id = "reload",      key = "F8",  cn = "重载 pwpr_config.json（★ 不会重绑按键）", en = "reload config" },
+    { group = "main",   id = "capture",     key = "Y",   cn = "采集（半径见 capture_radius_m；设 0 = 采全部）", en = "capture" },
+    { group = "main",   id = "library",     key = "J",   cn = "蓝图库: 下一张并加载",    en = "library: next" },
+    { group = "main",   id = "ghost",       key = "K",   cn = "投影: 放 / 收（放下时自动对齐、并沿用上次位置与进度）", en = "ghost: show/hide" },
+    { group = "main",   id = "layer",       key = "L",   cn = "投影: 切分层",            en = "ghost: cycle layer" },
+    { group = "main",   id = "site_cycle",  key = "U",   cn = "★ 投影: 换一处记录（同一张蓝图的多处放置记录之间切换）",
                                                                      en = "ghost: next recorded site" },
-    { group = "main",   key = "H",   cn = "投影: 重新定位到你脚下（= 记成新的一处位置）",
+    { group = "main",   id = "resnap",      key = "H",   cn = "投影: 重新定位到你脚下（= 记成新的一处位置）",
                                                                      en = "ghost: move to player" },
-    { group = "main",   key = "N",   cn = "渲染能力探测（S3）",      en = "capability probe" },
-    { group = "main",   key = "O",   cn = "屏幕提示通道探测（S9）",  en = "notify probe" },
+    { group = "main",   id = "probe",       key = "N",   cn = "渲染能力探测（S3）",      en = "capability probe" },
+    { group = "main",   id = "notify_probe",key = "O",   cn = "屏幕提示通道探测（S9）",  en = "notify probe" },
+    { group = "main",   key = "snap_key", cn = "★ 投影对齐（默认不绑；要用的在配置里设 snap_key）",
+                                                                     en = "snap (config snap_key)" },
 
-    { group = "arrow",  key = "F9",  cn = "切换方向键模式: 移动/旋转/材质", en = "cycle arrow mode" },
+    { group = "arrow",  id = "mode", key = "F9",  cn = "切换方向键模式: 移动/旋转/材质", en = "cycle arrow mode" },
     { group = "arrow",  key = "↑↓←→", cn = "按当前模式做事（见屏幕提示）", en = "do arrow action" },
 
     { group = "numpad", key = "NUM 8/2", cn = "前 / 后",             en = "forward / back" },
     { group = "numpad", key = "NUM 4/6", cn = "左 / 右",             en = "left / right" },
     { group = "numpad", key = "NUM 9/3", cn = "上 / 下",             en = "up / down" },
     { group = "numpad", key = "+ / -",   cn = "逆 / 顺时针旋转",     en = "rotate" },
-    { group = "numpad", key = "NUM 5",   cn = "清掉偏移与旋转（= 主键 H，没有小键盘用 H）",
-                                                                     en = "reset offset (= H)" },
-    { group = "numpad", key = "NUM 7",   cn = "建筑吸附（= 主键 U，没有小键盘就用 U）",
-                                                                     en = "snap (same as U)" },
+    { group = "numpad", key = "NUM 5",   cn = "清掉偏移与旋转",      en = "reset offset", same_as = "resnap" },
+    { group = "numpad", key = "NUM 7",   cn = "建筑吸附",            en = "snap-key action", same_as = "snap" },
     { group = "numpad", key = "NUM 0",   cn = "换微调步长",          en = "cycle step" },
     { group = "numpad", key = "NUM 1",   cn = "★ 紧急收回屏幕提示控件", en = "drop notify widget" },
     { group = "numpad", key = "*",       cn = "换投影材质",          en = "cycle material" },
 }
+
+--- 这一行**实际显示**的键: 有 `id` 就取玩家生效的键（改过键也如实显示），否则用写死的。
+--- `same_as` = "这一行等价于某个主键动作" ⇒ 补一句"（= 主键 X，没有小键盘就用 X）"，
+--- 而且那个 X 也要跟着玩家改的键走（2026-10-06: 以前写死 `H`/`U`，改了键就说不一致）。
+local function display_key(k)
+    if k.id == nil then return k.key end
+    local ok, Keys = pcall(require, "pwpr_keys")
+    if not ok or Keys == nil then return k.key end
+    local got = nil
+    pcall(function() got = Keys.label(k.id) end)
+    if type(got) == "string" and got ~= "" then
+        local p = nil
+        pcall(function() p = Keys.pretty(got) end)   -- ★ 键名美化（NINE → 9 等）
+        return p or got
+    end
+    -- 没绑上（配置非法且默认也不可用）⇒ 明说，别让玩家以为按这个键有用
+    return "未绑"
+end
+
+local function cn_text(k)
+    local cn = k.cn
+    if k.same_as == nil then return cn end
+    local ok, Keys = pcall(require, "pwpr_keys")
+    local main_key = ""
+    if ok and Keys ~= nil then
+        pcall(function() main_key = Keys.label(k.same_as) end)
+    end
+    if type(main_key) ~= "string" or main_key == "" then
+        return cn .. "（主键未绑）"
+    end
+    return string.format("%s（= 主键 %s，没有小键盘就用 %s）", cn, main_key, main_key)
+end
 
 --- 按键一览（每行一条，给 F7 和以后的界面用）
 function Notify.key_lines()
@@ -85,10 +120,10 @@ function Notify.key_lines()
         local k = Notify.KEYS[i]
         if i == 1 or Notify.KEYS[i - 1].group ~= k.group then
             out[#out + 1] = ""
-            out[#out + 1] = (k.group == "main" and "主键"
-                or (k.group == "arrow" and "方向键（配合 F9 的模式）" or "小键盘（放置微调）"))
+            out[#out + 1] = (k.group == "main" and "主键（★ 可在 pwpr_config.json 里改: key_*）"
+                or (k.group == "arrow" and "方向键（配合模式键）" or "小键盘（放置微调）"))
         end
-        out[#out + 1] = string.format("  %-11s %s     [%s]", k.key, k.cn, k.en)
+        out[#out + 1] = string.format("  %-11s %s     [%s]", display_key(k), cn_text(k), k.en)
     end
     return out
 end
@@ -104,6 +139,13 @@ function Notify.show(cn, en, kind)
     if cn == "" then return false end
     en = (en ~= nil) and tostring(en) or nil
     if kind ~= "error" then kind = "normal" end
+
+    -- ★ 2026-10-06: 屏幕上那一行也要跟着"改过的键位"走（日志那侧由 Log 的翻译层管）
+    pcall(function()
+        local Keys = require("pwpr_keys")
+        cn = Keys.translate(cn)
+        if en ~= nil then en = Keys.translate(en) end
+    end)
 
     -- 日志文件: 固定前缀 ">"，让"玩家当时看到的那一行"可检索
     Log.line("> " .. cn .. (en and ("     [" .. en .. "]") or ""))

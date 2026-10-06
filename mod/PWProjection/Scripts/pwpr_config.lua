@@ -34,6 +34,7 @@ local Config = {}
 
 Config.path = nil
 Config.values = {}
+Config.file_keys = {}      -- ★ 文件里**真的写了**的键（不是默认值！）—— 见 load 里的说明
 Config.loaded_ok = false
 Config.load_error = nil
 Config.migrated = nil      -- 本次读取是否做了默认值迁移
@@ -93,6 +94,35 @@ local DEFAULTS = {
     capture_max        = 6000,    -- 单次采集上限，防止把整个存档一次抓爆
     layer_gap_cm       = 200,     -- 层聚类阈值：相邻 Z 差超过它就分新层
     origin_snap_m      = 1.0,     -- 蓝图原点吸附到多少米的网格
+
+    -- ---- ★★★ 按键绑定（2026-10-06 玩家要求"所有按键都能在配置里改"）----
+    --
+    -- 以前 11 个动作的键**写死在 main.lua 里**，改键得改代码。现在全部在这里改。
+    --
+    -- 【怎么改】把值改成 UE4SS `Key` 枚举里的名字（就是 `Mods\Keybinds\Scripts\main.lua`
+    --   底部列的那张表里的大写名字）: `"Y"` `"H"` `"F9"` `"NUM_8"` `"UP_ARROW"` …
+    --   改完**必须重启游戏**（UE4SS 只在启动时注册按键；按 `F8` 只重载配置、不会重绑）。
+    --
+    -- 【三条硬限制（不看会踩坑）】
+    --   ① **不要用修饰键组合**（`"Ctrl+H"` 这种）—— UE4SS 按住修饰键**也会触发**裸键，
+    --      一次按键会跑两个回调（本项目实测过，`踩坑记录.md` §13）；
+    --   ② **不要占用游戏自己的键** —— 目前实测确认的是 `B`（建造模式入口）；
+    --      写进 `pwpr_keys.lua` 的 `Keys.RESERVED` 后会被自动拒绝并回退默认值；
+    --   ③ 两个动作**不能绑同一个键** —— 后一个会自动回退默认值（日志里会写原因）。
+    --
+    -- 【改错了会怎样】不会崩、也不会静默失效: 启动日志与 `F7` 里会逐条说明
+    --   （例: `按键 resnap: 配置 key_resnap = "ZZ" 在 Key 枚举里不存在 ⇒ 用默认 H`）。
+    key_capture      = "Y",    -- 采集（半径见 capture_radius_m）
+    key_library      = "J",    -- 蓝图库: 下一张并加载
+    key_ghost        = "K",    -- 投影: 放 / 收
+    key_layer        = "L",    -- 投影: 切分层
+    key_site_cycle   = "U",    -- 投影: 换一处记录
+    key_resnap       = "H",    -- 投影: 重新定位到你脚下
+    key_mode         = "F9",   -- 切换方向键模式（移动 / 旋转 / 材质）
+    key_probe        = "N",    -- 渲染能力探测（S3）
+    key_notify_probe = "O",    -- 屏幕提示通道探测（S9）
+    key_help         = "F7",   -- 帮助 / 当前状态
+    key_reload       = "F8",   -- 重载 pwpr_config.json（★ 不会重绑按键）
 
     -- ---- 蓝图库 ----
     blueprint_dir      = "",      -- 留空 = <mod>\blueprints
@@ -415,6 +445,92 @@ local DEFAULTS = {
     --   ③ 拿不到调度器会自动落回"立刻重发"。
     --   设成 false ⇒ 回到"在钩子里立刻重发"（旧行为，用来对照排查）。
     buildsnap_defer = true,
+    -- ★★★ **试把 C locale 切到 UTF-8**（默认 **true**）—— 为了"中文文件名的蓝图能不能读"。
+    --
+    -- 背景（2026-10-06 玩家实测）: 把蓝图复制成**中文名**之后加载失败，报
+    --   `读取失败: …: Illegal byte sequence` —— 失败发生在 `io.open` 那一步
+    --   （一个字节都没读到）: Windows 上 Lua 的 `fopen` 要先把文件名转成
+    --   系统 ANSI 代码页（本机 936/GBK），表示不了 UTF-8 的中文字节。
+    -- 做法: 启动时 `os.setlocale(".UTF-8")` 试一串候选，成功的话 CRT 的 narrow
+    --   字符接口按 UTF-8 解释 ⇒ 中文文件名就有可能直接打开。
+    -- ★ 只是"试": 失败不影响任何功能；结果写进日志与 `F7`（`文件名编码:` 那行）。
+    -- ★ 真结论看 `F7` 里的 `中文文件名: N 个（可读 X，打不开 Y）`（实机自检）。
+    -- 万一它影响了别的东西（理论上可能影响 CRT 的字符类/格式化），设成 false 即回到原状。
+    locale_utf8 = true,
+    -- ★★★ **UniPalUI 接入探针**（默认 **false** —— 2026-10-07 起，**这条路线已放弃**）。
+    --
+    -- ★★ **结论（2026-10-07，用 6 次可控崩溃换来的）**: **`UPI_RegisterMod` 从纯 Lua 走不通**。
+    --   它要的是"由 `BPModLoaderMod` 生成的 **BP ModActor**"（日志里
+    --   `[BPModLoaderMod] Loading mod: … / … created through Mod Actor!` 就是它的注册方式）。
+    --   我们已排除: 参数个数/顺序（dump 实测签名）、出参写法（必须传表）、
+    --   `EnterPage="None"`、对象来源（用**它自己的** `SCML_CPP_NewObject` 造的正规对象）、
+    --   时机（在世界里、启动 60 秒后）—— 仍然崩（`reading 0x70`）。
+    --   ⇒ **纯 Lua 没有 ModActor ⇒ 不能注册**。要走这条只能自带一个 BP 桥 pak（需要 UE5 编辑器）。
+    --   详见 `docs\UniPalUI接入探索.md`（含"UE4SS 调 BP 函数的完整约定"，那些知识仍然有效）。
+    --
+    -- 保留本探针的理由: 将来**万一有人能提供桥 pak**，把下面这些开关打开就能立刻复验 ✓
+    --   （阶段 A 是**纯只读**的，零风险；危险的调用各自有独立开关且默认关）。
+    unipal_probe = false,
+    -- ★ **阶段 B: 真的调它的函数**（默认 **false**）。
+    --   里面安全的部分: SCML 写日志（实测成功过）+ 只读成员矩阵；危险的部分已挪到各自的开关。
+    unipal_call_notif = false,
+    -- ★★★ **真的调 `UPI_RegisterMod`**（默认 **false**；2026-10-07 新增）—— 这一步**风险最高**:
+    --   **已实测（`.75`）**: 拿一个"普通对象"（UniPalUI Actor / 世界 Actor）当它的第一个参数
+    --   `CallObject` 时，**UniPalUI 不会优雅报错，而是直接空指针崩游戏**
+    --   （`EXCEPTION_ACCESS_VIOLATION reading 0x70`，UE4SS + 游戏侧 40 帧）。
+    --   它的 API 文档写明 `CallObject` 必须是"**实现了接口 `UPI_InterfaceFunctions` 的对象**"。
+    --   ⇒ 代码里已加守卫: **只有**当候选对象是"像 mod 回调对象"的类（类名含 `ModObject`）的实例时，
+    --     才允许调用；否则只记一行"跳过（没有合格 CallObject）"。
+    --   ⇒ 想要"游戏内改键"就必须先有合格 CallObject（候选: 运行时创建 `UPI_ModObject_C` 实例，
+    --     或自带一个几十 KB 的桥 pak）—— 详见 `docs\UniPalUI接入探索.md`。
+    unipal_try_register = false,
+    -- ★★ **路①: 运行时新建一个 `UPI_ModObject_C` 实例当 `CallObject`**（默认 **false**）—— 2026-10-07。
+    --   背景: `UPI_RegisterMod` 的第一个参数 `CallObject` 必须是"实现了接口 `UPI_InterfaceFunctions`
+    --   的对象"，而普通对象会让它**空指针崩游戏**（`.75` 实测）。
+    --   做法: 用 UE4SS 的 `StaticConstructObject(UPI_ModObject_C 的类, Outer=UniPalUI 实例)` 造一个
+    --   自己的"回调对象"——**不用 pak、不用 UE 编辑器**。
+    --   ⚠️ 这一步本身也可能崩（BP 构造可能有副作用）⇒ 单独开关、分步验证；
+    --      崩了看 `pwpr.log` 里 `[unipal] 路①: …` 那行即可定位。
+    unipal_create_modobject = false,
+    -- ★★★ **`UPI_RegisterMod` 的参数模板**（默认 **空串 = 永远不调**）—— 2026-10-07 新增。
+    --
+    -- 为什么需要它: 实测它的真实参数个数是 **7**（SDK v0.01.09 文档写 5），而那 2 个多出来的
+    --   参数**类型/顺序未知**；上一版把未知参数填成空字符串 ⇒ **崩游戏**（空串被编组成空对象
+    --   ⇒ BP 解引用 ⇒ `reading 0x70`）。
+    -- ⇒ 改成**配置驱动**: 只有这里写了模板，代码才会调它。模板里逐个写参数类型（逗号分隔）:
+    --   `obj`     = 我们的 CallObject（新建的那个 mod 对象）
+    --   `wctx`    = 世界上下文对象（UniPalUI 活实例；changelog 提到 v0.01.10 新增强制 WorldContext）
+    --   `name`    = 字符串 "PWProjection"       `creator` = 字符串 "CitrusDR"
+    --   `menu`    = 字符串 "PWPR"              `true`/`false` = 布尔
+    --   例（猜"多出来的两个是 WorldContext + 字符串"）: `"obj,name,creator,true,menu,wctx,name"`
+    -- ★ 改这个键**不需要重新部署**（改 pwpr_config.json → 重启游戏生效）。
+    -- ⚠️ 仍然**可能崩游戏**: 只要"个数对、类型也对得上"它就会**真的执行** ⇒ 一次只改一处、看日志再继续。
+    unipal_register_args = "",
+    -- ★ **允许用 `StaticConstructObject` 生造的对象去注册**（默认 false）—— 2026-10-07 新增。
+    --   实测过: 拿生造对象注册**崩过游戏**（签名/个数都对 ⇒ 问题在对象没经过它自己初始化）。
+    --   ★ 但 2026-10-07 玩家把 UniPalUI 的 DLL 部分装到**正确的 UE4SS 树**之后
+    --     （`[SCML] SCML_WorldActor : Register Timeout` 消失 = **C++ 侧起来了**），
+    --     **值得再试一次**（C++ 侧可能在注册时做额外校验/初始化）。
+    --   ⚠️ 打开 = **可能崩游戏**；崩了就把 `unipal_try_register` 关回去。
+    unipal_allow_static_callobj = false,
+    -- ★★ **注册延后多少秒**（默认 **60**）—— 2026-10-07 新增，**很可能是之前注册崩的原因**。
+    --   证据: UE4SS 日志显示 UniPalUI 是在 `PL_Splash`/`PL_Login`/`PL_Title` 这些地图里创建的，
+    --   而探针在**启动后 2.5 秒**就跑 ⇒ 很可能在**标题/加载界面**就调 `UPI_RegisterMod`，
+    --   那时它的 UI/世界上下文还没初始化 ⇒ 空指针崩（`reading 0x70`）。
+    --   ⇒ 注册这一步现在会**延后到启动后 N 秒**（游戏线程 + 同步黑匣子）。
+    --   ⚠️ 延后只是"等世界准备好"，**不保证不崩**；崩了就把 `unipal_try_register` 关回去。
+    unipal_register_delay_s = 60,
+    -- ★★★ **游戏内设置面板（Mod Options Framework 接入）**（默认 **true**）—— 2026-10-07。
+    --
+    -- 背景: 待办 5「方案②」的 UniPalUI 路线已放弃（见 `docs\UniPalUI接入探索.md`），
+    --   改走 **Mod Options Framework**（纯 Lua、MIT、在 Esc 菜单里加「模组选项」页）——
+    --   它能做**游戏内改键**（点一行再按目标键即可捕获，Escape 取消）✓
+    -- 本开关: 启动时尝试 `require("PalModOptionsClient")` 并注册我们的设置页。
+    --   ★ **框架没装 / 注册失败都不会影响任何现有功能**（文档要求如此）—— 照旧用
+    --     `pwpr_keys.json` + `pwpr_config.json` ✓ 所以默认可以开着。
+    -- 需要的两个 SDK 文件（**从框架的 DeveloperSDK 目录拷进我们的 Scripts**，我们不打包）:
+    --   `PalModOptionsClient.lua`、`pmo_json.lua`
+    options_framework = true,
     -- ★ **危险区域**（米，默认 **0 = 不启用**）。
     --   出过"卡死/崩溃"的那一片：填上米数（例 25）之后，落在那片里的请求只**提示**、
     --   并且仍然按上面的"精细吸附窗口"决定要不要吸。
@@ -761,6 +877,11 @@ function Config.load(script_dir)
     end
 
     local n_ok, n_bad = merge_known(parsed)
+    -- ★ 2026-10-06: 记下"**文件里真的写了**哪些键"（`Config.values` 是默认值+文件的合并结果，
+    --   光看它分不清"玩家写了"还是"默认值" —— `pwpr_keys.lua` 判断"按键是在旧位置配的"
+    --   就要靠这个；否则会把默认值误报成"你在 pwpr_config.json 里配了"）。
+    Config.file_keys = {}
+    for k in pairs(parsed) do Config.file_keys[k] = true end
     Config.loaded_ok = true
     Config.load_error = nil
     if merged_multi then
@@ -989,6 +1110,12 @@ Config.KEY_GROUP = {
     buildsnap_max_jump_cm = 1,
     buildsnap_skip_extra = 1,
     buildsnap_safe_cm = 1, buildsnap_zone_m = 1, buildsnap_defer = 1,
+    locale_utf8 = 1,
+    unipal_probe = 1, unipal_call_notif = 1, unipal_try_register = 1, unipal_create_modobject = 1, unipal_register_args = 1, unipal_allow_static_callobj = 1, unipal_register_delay_s = 1, options_framework = 1,
+    -- ★ 按键绑定（2026-10-06）: 全是"正在起作用"的第 1 组
+    key_capture = 1, key_library = 1, key_ghost = 1, key_layer = 1,
+    key_site_cycle = 1, key_resnap = 1, key_mode = 1,
+    key_probe = 1, key_notify_probe = 1, key_help = 1, key_reload = 1,
     ghost_resume_last = 1, ghost_resume_margin_m = 1, resume_save_interval_s = 1,
     ghost_site_merge_m = 1,
     -- ---- ③ 只服务于"未完成的 blueprint 模式"的键（2026-09-29 归到第 3 组）----
@@ -1084,7 +1211,27 @@ function Config.save()
     lines[#lines + 1] = string.format('  "config_version": %d', CONFIG_VERSION)
     lines[#lines + 1] = "}"
     local text = table.concat(lines, "\r\n")
-    return Util.write_file(Config.path, text .. "\r\n", true)
+    local full = text .. "\r\n"
+    -- ★★ 2026-10-08 两道保险（玩家 2026-10-07 反馈"每次保存都重写一次"）:
+    --   ① **内容没变 ⇒ 不写盘**（避免"UI 里点一次保存就重写一次文件"）；
+    --   ② 真要写 ⇒ **先备份**上一份到 `pwpr_config.bak.json`（只留一份）。
+    local old = nil
+    pcall(function()
+        local f = io.open(Config.path, "rb")
+        if f ~= nil then
+            old = f:read("*a")
+            f:close()
+        end
+    end)
+    if old == full then
+        Config.last_save = "unchanged"
+        return true, "内容没变，跳过写盘"
+    end
+    if old ~= nil then
+        pcall(function() Util.write_file(Config.path .. ".bak", old, true) end)
+    end
+    Config.last_save = "written"
+    return Util.write_file(Config.path, full, true)
 end
 
 --- 供帮助界面显示

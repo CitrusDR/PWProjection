@@ -307,8 +307,9 @@ function Session.status_lines()
         return out
     end
     local size = (Session.bp.meta and Session.bp.meta.size) or {}
+    -- ★ 2026-10-06: 如果这张蓝图在 index.txt 里有备注，一起显示（`文件名 —— 备注: xxx`）
     out[#out + 1] = string.format("当前蓝图: %s   (%s)",
-        tostring(Session.name), tostring(Session.bp_file))
+        tostring(Session.name), tostring(Session.bp_label or Session.bp_file))
     out[#out + 1] = string.format("  尺寸 %.1f x %.1f x %.1f 米   件数 %s",
         tonumber(size.x) or 0, tonumber(size.y) or 0, tonumber(size.z) or 0,
         tostring(Session.bp.meta and Session.bp.meta.total or "?"))

@@ -42,7 +42,7 @@ end
 --- ⇒ 现在启动时固定打一行 `构建标记: <日期.序号>`，F7 里也有；
 ---   看日志第一眼就能确认"跑的到底是哪一版"。
 --- 规矩: **改了功能就把它 +1**（只改注释/文档不用动）。
-Util.BUILD = "2026-09-29.59"
+Util.BUILD = "2026-10-09.106"
 
 -- --------------------------------------------------------------------------
 -- 路径
@@ -440,6 +440,76 @@ function Util.file_exists(path)
     if f == nil then return false end
     f:close()
     return true
+end
+
+-- --------------------------------------------------------------------------
+-- ★ 文件名编码（2026-10-06 玩家实测踩到的坑）
+-- --------------------------------------------------------------------------
+-- 现象: 玩家把采集到的蓝图**复制并改了个中文名**（`... - 汀上云筑-纯建筑框架.json`），
+--   加载失败，日志是:
+--     `读取失败: <全路径>: Illegal byte sequence`
+-- 根因: **失败发生在 `io.open` 那一步（一个字节都没读到）** —— Windows 上 Lua 的
+--   `fopen` 要先把文件名转成**系统 ANSI 代码页**（本机 936/GBK），表示不了那串
+--   UTF-8 字节 ⇒ `EILSEQ`（"Illegal byte sequence"）。
+--   旁证: 副本与原件 **SHA256 完全相同**、`index.txt` 也解析正常 ⇒ 内容/索引都无辜，
+--   唯一的问题就是"这个**名字**打不开"。
+--
+-- 对策（玩家要求: 先试能不能读，别急着限制死文件名）:
+--   Windows 10 1803+ 的 CRT 支持 `setlocale(LC_ALL, ".UTF-8")` —— 之后 narrow 字符
+--   接口按 UTF-8 解释，中文文件名**有可能**直接打开。⇒ 启动时**试一次**，
+--   结果写进日志与 `F7`（`文件名编码: …`），并用配置 `locale_utf8` 可以关掉。
+--   ★ 只有**实机证据**才算数: 真结论看 `Library.probe_non_ascii_names()` 打出来的
+--     "中文文件名: N 个（可读 X，打不开 Y）"。
+Util.locale_result = nil     -- { ok=, used=, before=, after=, skipped= }
+
+--- 名字里有没有非 ASCII 字节（中文文件名检测）
+function Util.has_non_ascii(s)
+    s = tostring(s or "")
+    for i = 1, #s do
+        if s:byte(i) > 127 then return true end
+    end
+    return false
+end
+
+--- 试把 C locale 切到 UTF-8（只试一次，失败不影响任何功能）。返回结果表
+function Util.try_utf8_locale(enable)
+    if Util.locale_result ~= nil then return Util.locale_result end
+    local res = { ok = false, used = nil, before = nil, after = nil, skipped = false }
+    if enable == false then
+        res.skipped = true
+        Util.locale_result = res
+        return res
+    end
+    pcall(function() res.before = os.setlocale() end)   -- locale=nil ⇒ 查询当前
+    local tries = { ".UTF-8", ".utf8", ".UTF8", ".65001", "C.UTF-8", "en_US.UTF-8" }
+    for i = 1, #tries do
+        local got = nil
+        pcall(function() got = os.setlocale(tries[i]) end)
+        if type(got) == "string" and got ~= "" then
+            res.ok = true
+            res.used = tries[i]
+            res.after = got
+            break
+        end
+    end
+    if not res.ok then
+        pcall(function() res.after = os.setlocale() end)
+    end
+    Util.locale_result = res
+    return res
+end
+
+--- 一行文字（给日志 / F7）
+function Util.locale_line()
+    local r = Util.locale_result
+    if r == nil then return "文件名编码: (未试)" end
+    if r.skipped then return "文件名编码: 未试 UTF-8 locale（locale_utf8 = false）" end
+    if r.ok then
+        return string.format("文件名编码: 已切到 %s（当前 %s）⇒ 中文文件名应当可读",
+            tostring(r.used), tostring(r.after))
+    end
+    return string.format("文件名编码: 试过 UTF-8 locale 但没成功（当前 %s）⇒ 中文文件名打不开",
+        tostring(r.after))
 end
 
 --- 返回 内容 或 nil, 错误

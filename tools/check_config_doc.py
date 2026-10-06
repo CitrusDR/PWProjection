@@ -29,6 +29,8 @@ DOC = os.path.join(ROOT, "docs", "配置说明.md")
 # 报告类（pwpr.log / pwpr_meshes.txt / pwpr_ui.txt / pwpr_probe.txt）不算配置。
 CONFIG_FILES = [
     "pwpr_config.json",
+    # ★ 2026-10-06: 按键单独一个文件（玩家要求），也是配置 ⇒ 必须在文档里点名
+    "pwpr_keys.json",
     "pwpr_meshmap.default.json",
     "pwpr_meshmap.json",
     "pwpr_capabilities.json",
@@ -93,6 +95,8 @@ def main():
     unregistered = sorted(f for f in code_files
                           if f not in CONFIG_FILES
                           and not f.endswith(".blueprint.json")
+                          # ★ 2026-10-06: 坏文件备份（不是配置，是"取证用的副本"）
+                          and not f.endswith(".bad.json")
                           and f != "package.json")
     if missing_files:
         print("  [严重] 以下配置文件没有在文档里出现（共 %d 个）:" % len(missing_files))

@@ -180,8 +180,15 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1 -Rollback   # 完全卸载
 
 ## 2. 按键
 
-> **本节和游戏里按 `F7` 看到的表，都来自 `pwpr_notify.lua` 的 `Notify.KEYS` 一张表**
-> （单一来源，见 4.6 最后一段）。加键/改名只改那一处。
+> ★★★ **2026-10-06 起，下面这些主键全部可以在 `Scripts\pwpr_keys.json` 里改**
+> （**按键单独一个文件** —— 不存在会自动生成一份，11 个键都写着默认值）。
+> **改完要重启游戏**（UE4SS 只在启动时注册按键；按 `F8` 只重载 `pwpr_config.json`、**不会**重绑）。
+> **能写哪些键名** ⇒ 完整清单（165 个）见 **[`docs\按键列表.md`](../../docs/按键列表.md)**。
+> `pwpr_config.json` 里的同名 `key_*` 仍然兼容（不推荐，启动时会提示搬过来）。
+> 表里的键名是**默认值**；改了之后 `F7` 那张表会显示你**实际**的键。
+>
+> **本节和游戏里按 `F7` 看到的表**：说明文字来自 `pwpr_notify.lua` 的 `Notify.KEYS`，
+> **键名**来自 `pwpr_keys.lua` 的 `Keys.ACTIONS`/`Keys.resolve()`（单一来源）。
 
 ### 一页速查
 
@@ -313,12 +320,19 @@ powershell -ExecutionPolicy Bypass -File deploy.ps1 -Rollback   # 完全卸载
 
 ### 3.1 模组本体：15 个文件，全部必需
 
-`deploy.ps1` 会把这 15 个文件复制到游戏目录。它们**互相依赖，少一个就起不来**
+`deploy.ps1` 会把这 **24** 个文件复制到游戏目录。它们**互相依赖，少一个就起不来**
 （缺哪个，日志里会直接写 `require 失败: <名字>`）。
+
+> ★★ **其中 2 个是第三方文件**（`PalModOptionsClient.lua`、`pmo_json.lua`）——
+> 来自 **Mod Options Framework**（作者 Elv，**MIT**），用于"Esc → 模组选项"里的
+> **游戏内设置面板 / 改键**。出处与许可证见 **`third_party\README.md`** ✓
+> **框架本体没装也完全不影响本模组**（会自动退回 `pwpr_keys.json` + `pwpr_config.json`）✓
 
 | 文件 | 作用 | 被谁依赖 |
 |---|---|---|
 | **`main.lua`** | 入口：按键绑定、流程编排 | 游戏加载它 |
+| **`pwpr_unipal.lua`**（★ 2026-10-06 新增）| **UniPalUI 接入探针**（待办 5 方案②）: 阶段 A **只读**探测（类/实例/API 函数与参数个数）；阶段 B 可选用配置打开。**可选依赖，没装 UniPalUI 也完全正常** | 被 `main.lua`（启动后 2.5s 延迟跑 + `F7`）引用 |
+| **`pwpr_keys.lua`**（★ 2026-10-06 新增）| **按键绑定**：配置 → 生效键名的解析/校验（`Keys.ACTIONS` 是动作的**单一来源**）+ 提示文本的键名翻译 | 被 `main.lua`（绑定/`F7`）与 `pwpr_notify.lua`（按键表）引用 |
 | `pwpr_util.lua` | 基础设施：对象读取、变换、路径 | 被 10 处引用（最底层） |
 | `pwpr_json.lua` | 手写 JSON 编解码 | 被 4 处引用 |
 | `pwpr_log.lua` | 日志（UTF-8，中文正常） | 被 4 处引用 |
