@@ -35,8 +35,15 @@ param(
 #   起因: 我改代码时把 `pwpr_placed.lua` 拼出了两个 `return`，
 #   部署进游戏后 UE4SS 直接 `init failed (mod disabled)` ⇒ 玩家「按 J 都没反应了」。
 #   一条 `luacheck.py` 就能拦住它 ⇒ 放在这里当闸门。
+#
+#   ★ 2026-10-09 修: 这里原来写的是 `..\..\..\tools\luacheck.py`（**多了一层 `..`**）——
+#     从 mod\PWProjection 往上三层是 `D:\dsh-workspace\`，那里没有 tools ⇒ `Test-Path`
+#     恒为假 ⇒ **这道闸门从 .51 写进去起就没跑过，一直是静默跳过** ✗。
+#     正确的相对深度是**两层**（mod\PWProjection → mod → 仓库根）。
+#     （从"解压出来的部署包"里跑时找不到它，仍会优雅跳过 —— 那种情况下请先在工作区
+#      手动跑 `python tools\luacheck.py mod\PWProjection\Scripts`。）
 # ---------------------------------------------------------------------------
-$checker = Join-Path $PSScriptRoot '..\..\..\tools\luacheck.py'
+$checker = Join-Path $PSScriptRoot '..\..\tools\luacheck.py'
 if (Test-Path $checker) {
     Write-Host '--- 部署前静态检查 (luacheck) ---'
     $srcDir = Join-Path $PSScriptRoot 'Scripts'
