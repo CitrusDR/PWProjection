@@ -2161,6 +2161,14 @@ pcall(function() Options.load_pre() end)
 local cfg_values, cfg_note = nil, "(读取失败)"
 pcall(function() cfg_values, cfg_note = Config.load(Util.script_dir) end)
 Log.emit("配置: " .. tostring(cfg_note))
+-- ★★ 2026-10-09 玩家要求: 日志**行数上限 + 轮转**（启动时先查一次已有的 pwpr.log）
+--   超过 `log_max_lines`（默认 20000）⇒ 上一份存成 `pwpr.log.old.log`（只留一份）+ 开新的 ✓
+pcall(function()
+    local rotated = Log.rotate_if_needed()
+    if rotated == true then
+        Log.emit("日志: 上一份超过行数上限 ⇒ 已存为 pwpr.log.old.log，本份重新开始")
+    end
+end)
 -- ★ UI-3: 把 UI 里的数值套到已载入的配置上（4 个数值: 采集范围/微调步长/旋转角/分层间距）✓
 pcall(function()
     local nnum = Options.apply_numeric_overrides()
@@ -2516,6 +2524,22 @@ BuildSnap.deps.notify = function(cn, en) Notify.show(cn, en) end
 ---   来源就是 K 放投影时读的那个胶囊体半高（实测 88 厘米，见 `Session.feet_offset_cm`）。
 BuildSnap.deps.half_height_cm = function() return (Session.feet_offset_cm()) end
 
+--- ★★★ 2026-10-09（`.111`）新增: **"这一处投影"的身份** —— 高度自适应/降级的记忆按键它分组。
+--- 为什么（玩家 `.110` 实测）: 在 A 处给 `Glass_Foundation` 挪过一次投影高度后，换到 B 处
+---   或换一张蓝图**第一次**放置又被拒 ⇒ 旧记忆只按 id 走 ⇒ 直接降级成"只吸 x/y"
+---   ⇒ **投影再也不跟着挪** ⇒ 高度差一直在，地基上的建筑全放不下去（玩家原话:「投影不会移动」✗）。
+--- 给出的是: **蓝图文件 + 投影锚点（世界 x/y）** —— 换一处 / 换蓝图 ⇒ 键变了 ⇒ 那个 id 的
+---   "挪过高度了 / 只吸 x/y" 记忆**自动失效**，重新走一次"把投影高度挪到游戏允许的位置" ✓
+--- 锚点还没定位（刚读档）时退回"只用蓝图文件"（= 行为接近旧的"整局一份"）✓
+BuildSnap.deps.site_key = function()
+    local bp = tostring(Session.bp_file or "?")
+    local a = Session.anchor
+    if type(a) ~= "table" or type(a.x) ~= "number" or type(a.y) ~= "number" then
+        return bp
+    end
+    return string.format("%s@%.0f,%.0f", bp, a.x, a.y)
+end
+
 --- ★★ 2026-09-29 玩家提的方案（原话）:
 ---   「如果发现按吸附的高度不让放置（比如现在水面的这种情况），就在本次放置之后，
 ---     把投影地基的 z 轴也换到实际允许的位置，并且弹出一个提示，说因为地基吸附后的
@@ -2531,13 +2555,41 @@ BuildSnap.deps.half_height_cm = function() return (Session.feet_offset_cm()) end
 BuildSnap.deps.on_z_rejected = function(id, dz, why)
     if type(dz) ~= "number" or dz ~= dz then return false end
     local absd = math.abs(dz)
-    -- 太小 = 噪声（不是高度问题）；太大 = 根本不是"高度不允许"，别把整份蓝图挪飞
-    if absd < 5.0 or absd > 500.0 then return false end
+    -- ★★ 2026-10-09 玩家要求 A+B（起因: 水面/特殊地形上"投影没跟着挪高度"）:
+    --   A = 上限**可配** `buildsnap_z_max_cm`（默认 500）—— 差几米时也能自动抬 ✓
+    --   B = 超过上限**不再静默放弃** ⇒ 屏幕提示 + 日志写明"差多少、请手动微调"✓
+    --   （原来这里硬编码 `absd > 500.0 ⇒ return false`，玩家完全看不到发生了什么 ✗）
+    local zmax = 500.0
+    pcall(function()
+        local v = tonumber(Config.get("buildsnap_z_max_cm"))
+        if v ~= nil and v >= 5 then zmax = v end
+    end)
+    if absd < 5.0 then return false end          -- 太小 = 噪声（不是高度问题）
+    if absd > zmax then
+        pcall(function()
+            Log.emit(string.format(
+                "高度自适应: 这一处需要 %+.0f 厘米，超过上限 %.0f 厘米 ⇒ **没有自动移动投影**"
+                .. "（可调大 `buildsnap_z_max_cm`，或手动微调抬高）", dz, zmax))
+            Log.solid(string.format("[bsnap] ● 高度自适应放弃: dz=%+.0f 超过上限 %.0f",
+                dz, zmax))
+            Notify.show(string.format(
+                "这片地形需要抬高 %.1f 米（超过自动上限）⇒ 请手动微调抬高投影",
+                absd / 100.0), "height fix over limit")
+        end)
+        return false
+    end
     if not Session.active or not Ghost.visible then return false end
     if Session.offset == nil then return false end
 
     Session.offset.z = (tonumber(Session.offset.z) or 0.0) + dz
     local id_txt = tostring(id or "这一类建筑")
+    -- ★★ 黑匣子（规矩 3b）: 这一步**改了投影在世界里的高度** —— 同步落盘一行，
+    --   让"投影什么时候被挪过、挪了多少"在卡死/崩掉时也留得下来 ✓
+    if Log ~= nil and Log.solid ~= nil then
+        pcall(Log.solid, string.format(
+            "  [bsnap] ● 高度自适应: %s dz=%+.0f 厘米 ⇒ 投影 z 偏移现在 %.0f（%s）",
+            id_txt, dz, tonumber(Session.offset.z) or 0.0, tostring(why or "")))
+    end
     local ok = pcall(function()
         refresh_projection(string.format("高度自适应（%s）", tostring(why or "游戏不认这个高度")))
     end)

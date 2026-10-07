@@ -325,8 +325,10 @@ BuildSnap.learned_id = {}
 --   高度关掉。但水面那次实测证明"改了高度再重发"有可能让游戏**整局卡死**
 --   （`.52` 黑匣子铁证，见 `docs\踩坑记录.md` §68）。⇒ 做法是**逐级退让**:
 --
---   ① `BuildSnap.z_denied[id]` —— 这次会话里"改了高度"的那次放置被游戏**拒了**
---      （1.2 秒内没有新建筑出现）⇒ 之后同类 id **只吸 x/y**。玩家马上再放一次即可。
+--   ① `BuildSnap.z_denied[id@处]` —— **这一处投影**上"改了高度"的那次放置被游戏**拒了**
+--      （1.2 秒内没有新建筑出现）⇒ 这一处同类 id **只吸 x/y**。玩家马上再放一次即可。
+--      ★ `.111` 起键里带"处"（蓝图 + 锚点）⇒ **换一处 / 换一张蓝图会自动恢复**，
+--        不再是"整局一次"（那个"整局一次"正是 `.110` 实测的 bug，见下面表的说明）。
 --   ② `BuildSnap.frozen[id]` —— 上一次会话**卡死**在某类 id 的重发里:
 --      · 1 = 那次**改了高度** ⇒ 之后这类只吸 x/y（原样放行高度）；
 --      · 2 = 那次**已经没改高度**还是卡 ⇒ 之后这类**完全不插手**（绝不重发）。
@@ -335,8 +337,32 @@ BuildSnap.learned_id = {}
 --   ③ 重置这份记忆: **删掉/移走 `pwpr.log`**（记忆就存在它里面，不额外建文件）。
 -- --------------------------------------------------------------------------
 BuildSnap.frozen = {}        -- [归一化 id] = 1 / 2，见上
-BuildSnap.z_denied = {}      -- [归一化 id] = true，见上
-BuildSnap.z_shifted = {}     -- [归一化 id] = true: 已经为它"自动调过投影高度"
+-- ★★★ 2026-10-09（`.111`）: 下面这几份"降级/高度"记忆的键从**归一化 id** 改成
+--   **归一化 id + "这一处投影"**（`BuildSnap.z_key()`，键形如 `glass_foundation|蓝图@x,y`）。
+--
+-- 起因（玩家实测 `.110`，日志见 `docs\踩坑记录.md` §74）:
+--   ① 在 A 处给 `Glass_Foundation` 挪过一次投影高度（`z_shifted[id]` 置 true）；
+--   ② 换到 B 处 / 换一张蓝图，**第一次**放置又被拒（投影比游戏允许的高度低 59 厘米）
+--      ⇒ 旧代码只看 id 的记忆 ⇒ 直接落到"这类只吸 x/y"那一级，**投影再也不跟着挪**
+--      ⇒ 地基上的建筑全都放不下去（玩家原话:「**投影不会移动**」✗）。
+--   ⇒ 现在**换一处 = 新情况**（新键）⇒ 会重新走一次"把投影高度挪到游戏允许的位置"；
+--     而**同一处**里挪过还是被拒 ⇒ 照旧降级（防"反复挪"把整份投影挪飞）。
+BuildSnap.z_denied = {}      -- [z_key] = true: 这一处这一类"只吸 x/y"，见上
+BuildSnap.z_shifted = {}     -- [z_key] = true: 这一处已经为它"自动调过投影高度"
+BuildSnap.z_learned = {}     -- [z_key] = true: 这一处已经为它"按游戏实际高度校准过"
+
+--- ★★★ 2026-10-09（`.111`）新增: 降级 / 高度记忆的**键** = 归一化 id + "这一处投影"。
+---   "处" = `deps.site_key()`（main.lua 给: **蓝图文件 + 投影锚点 x/y**）。
+---   取不到就退回"只有 id"（= 旧行为: 整局一份）—— 退化了也不会报错/不放行错。
+function BuildSnap.z_key(idn)
+    local site = ""
+    if BuildSnap.deps.site_key ~= nil then
+        local ok, s = pcall(BuildSnap.deps.site_key)
+        if ok and type(s) == "string" and s ~= "" then site = s end
+    end
+    return tostring(idn or "") .. "|" .. site
+end
+
 --- [归一化 id] = dz（**游戏允许的高度 − 投影记录的高度**）
 ---   —— 卡死那一局的日志里两个数都在，所以能算出来；下次一按放置就先把投影挪过去。
 BuildSnap.pending_z_shift = {}
@@ -837,6 +863,9 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
     --       ⇒ 只吸"小修正"，大搬运一律原样放行并**明确告诉玩家**（还给了调大的开关）。
     local id_norm_now = BuildSnap.norm_id(id_str)
     if type(id_norm_now) ~= "string" then id_norm_now = "" end
+    -- ★ `.111`: 降级/高度记忆的键 = 这一类 id + **这一处投影**（见 `BuildSnap.z_key`）。
+    --   在这里算一次、随请求一路带下去（读和写必须用同一个键）。
+    local zkey = BuildSnap.z_key(id_norm_now)
     local frozen = BuildSnap.frozen[id_norm_now]
     local z_why = ""
     if frozen == 1 and BuildSnap.pending_z_shift[id_norm_now] ~= nil then
@@ -851,7 +880,7 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         if moved == true then
             BuildSnap.pending_z_shift[id_norm_now] = nil
             BuildSnap.frozen[id_norm_now] = nil
-            BuildSnap.z_shifted[id_norm_now] = true
+            BuildSnap.z_shifted[zkey] = true
             frozen = nil
             if Log ~= nil and Log.solid ~= nil then
                 pcall(Log.solid, string.format(
@@ -872,9 +901,10 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         --   ⇒ 防崩全靠**机制**（`buildsnap_defer`: 重发排到下一帧），不靠少吸。
         z_why = "（记忆里有这一类出过事的记录，但本版**不因此少吸**）"
     end
-    if snap_z == true and BuildSnap.z_denied[id_norm_now] == true then
+    if snap_z == true and BuildSnap.z_denied[zkey] == true then
         snap_z_eff = false
-        z_why = "（上一次\"改高度\"被游戏拒了 ⇒ 这一类只吸 x/y —— 这是「被拒」信号，不是「崩」）"
+        z_why = "（**这一处**上一次\"改高度\"被游戏拒了 ⇒ 这一类只吸 x/y —— "
+            .. "这是「被拒」信号，不是「崩」；换一处 / 换一张蓝图会自动恢复）"
     end
 
     -- ---- ★★★ 危险区域（整片拉黑）: 这一片出过"卡死/崩溃" ⇒ **一律不重发**
@@ -917,7 +947,7 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         max_dist = 6000.0
         rot_tol = 180.0
         -- ★ 演示模式**不再强行打开高度** —— 否则"卡死记忆/被拒"的降级会被它顶掉
-        if frozen ~= 1 and BuildSnap.z_denied[id_norm_now] ~= true then
+        if frozen ~= 1 and BuildSnap.z_denied[zkey] ~= true then
             snap_z = true
             snap_z_eff = true
         end
@@ -1347,7 +1377,9 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         --   ⇒ 玩家拆掉之后 2.5 秒的恢复不触发（只能等十几秒的兜底全扫）。
         --   ⇒ 所以这里照样排一次确认（它同时给我们"游戏真的建出来了"和 actor 句柄）。
         BuildSnap.schedule_confirm(string.format("%s @ 已经够准", tostring(res.rec.t)),
-            1200, string.format("已按原位建出（差 %.0f 厘米，未改写）", corr), res.idx)
+            1200, string.format("已按原位建出（差 %.0f 厘米，未改写）", corr), res.idx,
+            { id = id_str, id_norm = id_norm_now, z_changed = false,
+              game_z = lz, target_z = tz, proj_z = res.z, z_key = zkey })
         if trace then
             Log.line(string.format(
                 "  [bsnap] 已经够准（差 %.1f 厘米 ≤ %.1f）⇒ **不改坐标**"
@@ -1488,6 +1520,10 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         rec_idx = res.idx, rec_t = res.rec.t, id_str = id_str,
         id_norm = id_norm_now, snap_z_eff = snap_z_eff,
         game_z = lz, target_z = tz, corr = res.dist or res.along or 0.0,
+        -- ★ `.111`: `proj_z` = **投影里这一件的 z**（= res.z），跟"这次请求发的是谁的高度"
+        --   无关 —— 「落地确认」的高度学习必须拿它当基准，否则"只吸 x/y"那一级
+        --   （请求里带的是游戏自己的高度）留下的高度差永远看不出来 ✗
+        proj_z = res.z, z_key = zkey,
         note = note,
     }
 
@@ -1580,7 +1616,7 @@ function BuildSnap.on_request_build(self, build_object_id, location, rotation,
         BuildSnap.schedule_confirm(string.format("%s @ (%.0f,%.0f,%.0f)",
             tostring(res.rec.t), tx, ty, tz), 1200, note, res.idx,
             { id = id_str, id_norm = id_norm_now, z_changed = snap_z_eff,
-              game_z = lz, target_z = tz })
+              game_z = lz, target_z = tz, proj_z = res.z, z_key = zkey })
         -- ★ 默认**不弹**（`buildsnap_notify`，2026-09-29 性能修复）:
         --   一次放置两条提示（这条 + 落地确认）都要在引擎侧"找控件/写文本/
         --   沿父链显示"，而且原来每步还写一次盘 ⇒ 和游戏自己的放置叠在一起就是卡。
@@ -1660,7 +1696,8 @@ function BuildSnap.run_deferred(job)
     BuildSnap.schedule_confirm(string.format("%s @ (%.0f,%.0f,%.0f)",
         tostring(job.rec_t), job.x, job.y, job.z), 1200, job.note, job.rec_idx,
         { id = job.id_str, id_norm = job.id_norm, z_changed = job.snap_z_eff,
-          game_z = job.game_z, target_z = job.target_z })
+          game_z = job.game_z, target_z = job.target_z,
+          proj_z = job.proj_z, z_key = job.z_key })
     if BuildSnap.deps.notify ~= nil and BuildSnap.deps.get ~= nil
         and BuildSnap.deps.get("buildsnap_notify") == true then
         BuildSnap.deps.notify(string.format("建造吸附: %s", job.note),
@@ -1741,7 +1778,8 @@ end
 --- 安排一次"1.2 秒后检查"（改发成功之后调用）
 --- extra_note: 给玩家看的一句话（例: 「位置修正 48 厘米（含高度）」）
 --- rec_idx: 这次改发瞄准的是**哪一条投影记录**（投影侧要靠它精确隐藏那一件）
---- info: 可选表 `{ id=游戏给的建筑 id, id_norm=归一化 id, z_changed=这次有没有改高度 }`
+--- info: 可选表 `{ id=游戏给的建筑 id, id_norm=归一化 id, z_changed=这次有没有改高度,
+---                   proj_z=投影里这一件的 z, z_key=降级记忆的键（id+这一处） }`
 ---   —— "被游戏拒了就降级"的阶梯要用它（见 `BuildSnap.z_denied` 的说明）
 function BuildSnap.schedule_confirm(target_desc, delay_ms, extra_note, rec_idx, info)
     if BuildSnap.confirm_installed ~= true then return end
@@ -1755,6 +1793,8 @@ function BuildSnap.schedule_confirm(target_desc, delay_ms, extra_note, rec_idx, 
         pc.z_changed = (info.z_changed == true)
         pc.game_z = info.game_z
         pc.target_z = info.target_z
+        pc.proj_z = info.proj_z
+        pc.z_key = info.z_key
     end
     local list = BuildSnap.pending_confirms
     list[#list + 1] = pc
@@ -1779,6 +1819,55 @@ function BuildSnap.schedule_confirm(target_desc, delay_ms, extra_note, rec_idx, 
                     pcall(BuildSnap.deps.on_placed_confirmed, pc.rec_idx,
                         pc.actor)
                 end
+                -- ★★★ 2026-10-09 新增: **高度学习**（玩家实测: 投影低于海平面、游戏建到合法高度，
+                --   而投影没跟着挪 ⇒ 上面建筑放不下去）。
+                --   做法: 拿**游戏实际建出来的 z** 与**投影里这一件的 z**（`pc.proj_z`）比 ——
+                --   差 ≥5cm 说明游戏把高度改了 ⇒ 走已有的"挪投影高度"那条路
+                --   （`on_z_rejected`）把整份投影抬上去 ✓
+                --   ★ `.111` 起基准从"我们请求的 z"改成"**投影里这一件的 z**" —— 因为
+                --     "只吸 x/y"那一级请求里带的是**游戏自己**的高度，两者一比永远相等
+                --     ⇒ 高度学习在最需要它的那条路上**从来不生效**（玩家 `.110` 实测 ✗）。
+                --   ★ 一处 + 一类只学一次（`z_learned`）: 否则"每放一件都挪一点"会累积漂移。
+                --   开关: `buildsnap_learn_z`（默认 true）；上限仍受 `buildsnap_z_max_cm` 约束 ✓
+                pcall(function()
+                    local learn = true
+                    if BuildSnap.deps.get ~= nil then
+                        local v = BuildSnap.deps.get("buildsnap_learn_z")
+                        if v == false then learn = false end
+                    end
+                    local ref = pc.proj_z
+                    if type(ref) ~= "number" then ref = pc.target_z end
+                    if learn and pc.actor ~= nil and type(ref) == "number" then
+                        local loc = nil
+                        pcall(function() loc = pc.actor:K2_GetActorLocation() end)
+                        local az = nil
+                        pcall(function()
+                            if loc ~= nil then az = tonumber(loc.Z) or tonumber(loc.z) end
+                        end)
+                        if az ~= nil then
+                            local dz = az - ref
+                            if math.abs(dz) >= 5.0 then
+                                local lk = tostring(pc.z_key or pc.id_norm or "")
+                                if BuildSnap.z_learned[lk] == true then
+                                    Log.emit(string.format(
+                                        "  [bsnap] 高度学习: 投影 z=%.1f 游戏实际 z=%.1f"
+                                        .. " 差 %+.1f 厘米（这一处已经学过 ⇒ **不再挪**，避免累积漂移）",
+                                        ref, az, dz))
+                                else
+                                    BuildSnap.z_learned[lk] = true
+                                    Log.emit(string.format(
+                                        "  [bsnap] 高度学习: 投影 z=%.1f 游戏实际 z=%.1f 差 %+.1f 厘米"
+                                        .. " ⇒ 把投影高度挪过去", ref, az, dz))
+                                    if BuildSnap.deps.on_z_rejected ~= nil then
+                                        pcall(BuildSnap.deps.on_z_rejected,
+                                            tostring(pc.id or ""), dz,
+                                            "按游戏实际建出的高度学习")
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end)
                 -- ★ 也给屏幕一行 —— 玩家 2026-09-29 反馈"看不出来到底有没有生效"，
                 --   所以把"游戏确认建出 + 这次修正了多少"直接摆到屏幕上。
                 -- ★ 同样默认不弹（见 buildsnap_notify_confirm 的注释）
@@ -1804,14 +1893,18 @@ function BuildSnap.schedule_confirm(target_desc, delay_ms, extra_note, rec_idx, 
                 --   这次**改了高度**还是被游戏拒了 ⇒ **先试着把投影高度挪到游戏允许的位置**
                 --   （`deps.on_z_rejected` = 改偏移 + 重画投影 + 弹提示），挪成功就
                 --   **不降级**（下次照常吸高度，只是高度基准被修正了）；
-                --   挪不了 / 已经挪过一次还是被拒 ⇒ 退到"这一类只吸 x/y"（`z_denied`）。
+                --   挪不了 / **这一处**已经挪过一次还是被拒 ⇒ 退到"这一类只吸 x/y"（`z_denied`）。
                 --   ★ 前两级都**故意不设**"这条记录刚被拒"的闸（闸 ③）—— 让玩家马上
                 --     再放一次就能用上修正后的策略；等到"不改高度"也被拒了才落回闸 ③。
+                --   ★★ `.111` 起记忆的键是 `pc.z_key`（**这一类 + 这一处投影**）——
+                --     旧代码只按 id 记 ⇒ 换一处之后第一次放置就被判"挪过了"⇒ 直接降级
+                --     ⇒ **投影再也不跟着挪**（玩家 `.110` 实测，见 `pwpr_buildsnap.lua` 顶部说明）。
                 if pc.rec_idx ~= nil then
                     local idn = pc.id_norm
+                    local zk = tostring(pc.z_key or idn or "")
                     local zcase = (pc.z_changed == true) and type(idn) == "string"
                         and idn ~= ""
-                    if zcase and BuildSnap.z_shifted[idn] ~= true then
+                    if zcase and BuildSnap.z_shifted[zk] ~= true then
                         local dz = nil
                         if type(pc.game_z) == "number" and type(pc.target_z) == "number" then
                             dz = pc.game_z - pc.target_z
@@ -1824,25 +1917,29 @@ function BuildSnap.schedule_confirm(target_desc, delay_ms, extra_note, rec_idx, 
                             end)
                         end
                         if moved == true then
-                            BuildSnap.z_shifted[idn] = true
+                            BuildSnap.z_shifted[zk] = true
                             Log.emit(string.format(
                                 "  [bsnap] ★ 高度自适应: %s 吸附的高度被拒 ⇒ 已把**投影高度"
                                 .. "挪 %+.0f 厘米**（对齐到游戏允许的高度）⇒ **再放一次**即可"
                                 .. "（高度继续跟投影）", tostring(pc.id), dz))
                         else
-                            BuildSnap.z_denied[idn] = true
+                            BuildSnap.z_denied[zk] = true
                             Log.emit(string.format(
                                 "  [bsnap] 这次「改了高度」被游戏拒了，而且**挪不了投影高度**"
-                                .. "（%s）⇒ 之后 **%s 这一类只吸 x/y**。**马上再放一次**"
-                                .. "就是降级后的策略；想恢复吸高度: 删掉/移走 pwpr.log 后重启",
-                                (dz == nil) and "读不到高度差" or "回调不可用",
+                                .. "（%s；若上面那行写了「超过上限」就是差得太多）"
+                                .. "⇒ **这一处**的 %s 之后只吸 x/y。**马上再放一次**"
+                                .. "就是降级后的策略；想恢复吸高度: **换一处 / 换一张蓝图会自动"
+                                .. "恢复**（或删掉/移走 pwpr.log 后重启）",
+                                (dz == nil) and "读不到高度差" or "回调没挪成",
                                 tostring(pc.id)))
                         end
                     elseif zcase then
-                        BuildSnap.z_denied[idn] = true
+                        BuildSnap.z_denied[zk] = true
                         Log.emit(string.format(
-                            "  [bsnap] 调过投影高度后**还是被拒** ⇒ 之后 **%s 这一类只吸 x/y**"
-                            .. "（不再动高度）", tostring(pc.id)))
+                            "  [bsnap] **这一处**已经为 %s 挪过一次投影高度、这次还是被拒"
+                            .. " ⇒ **这一处**的 %s 之后只吸 x/y（高度改由「高度学习」"
+                            .. "在真正放上去之后自动校准）；**换一处 / 换一张蓝图会自动恢复**",
+                            tostring(pc.id), tostring(pc.id)))
                     else
                         -- ★ 记住"这一条刚被游戏拒绝过"（闸 ③ 用: 短时间内不再吸它）
                         if BuildSnap.rejected == nil then BuildSnap.rejected = {} end
@@ -1931,11 +2028,12 @@ function BuildSnap.status_lines()
                 (v == 2) and "不插手" or "只吸x/y")
         end
         for k in pairs(BuildSnap.z_denied or {}) do
-            zdn[#zdn + 1] = tostring(k)
+            -- ★ `.111` 起键是 `id|蓝图@x,y` —— 这里只显示 id（不然一行太长）
+            zdn[#zdn + 1] = tostring(k):gsub("|.*$", "")
         end
         if #frz > 0 or #zdn > 0 then
             out[#out + 1] = string.format(
-                "建造吸附降级: 卡死记忆[%s] 本次被拒后降级[%s]（重置: 删掉 pwpr.log）",
+                "建造吸附降级: 卡死记忆[%s] 这一处被拒后降级[%s]（换一处/换蓝图自动恢复；重置: 删掉 pwpr.log）",
                 (#frz > 0) and table.concat(frz, ", ") or "无",
                 (#zdn > 0) and table.concat(zdn, ", ") or "无")
         end

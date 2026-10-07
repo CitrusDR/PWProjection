@@ -6,7 +6,7 @@
 |---|---|
 | 用途 | 本模组的**游戏内设置面板 / 改键**（Esc → 模组选项 → PWProjection）|
 | 上游 | <https://github.com/Elvlin/Mod-Options-Framework> |
-| 作者 | Elv |
+| 作者 | Elvlin（许可里面写的“Elv原则”） |
 | 许可证 | **MIT**（原文见 `LICENSE-Mod-Options-Framework.txt`，逐字保留、未改动）|
 | 我们分发的文件 | `Scripts\PalModOptionsClient.lua`、`Scripts\pmo_json.lua` |
 | 依据 | 上游 `DEVELOPER_API.md` 第 2 节：*"Copy these two files from `DeveloperSDK` into the consumer's `Scripts` folder"* |

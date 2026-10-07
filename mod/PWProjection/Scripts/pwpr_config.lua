@@ -431,6 +431,20 @@ local DEFAULTS = {
     --   摆得离投影更近、或按 `H` 重新对齐投影，都能回到窗口内。
     -- `0` = 关闭窗口（回到"多远都吸"，风险自负）。
     buildsnap_safe_cm = 0,
+    -- ★★ **高度自适应允许的最大修正量（厘米）**（默认 **500**）—— 2026-10-09 新增（玩家要求 A+B）
+    --   背景: 水面/特殊地形上"游戏允许的高度"与"投影记录的高度"可能差几米；原来上限**硬编码 500cm**，
+    --     超过就**静默放弃**（投影不挪、上面的建筑放不下去，玩家一头雾水 ✗）。
+    --   现在: ① 上限**可配**（水面差得多就调到 2000 或更大）✓
+    --         ② 超过上限时**不再静默** —— 给一条屏幕提示 + 日志写明"差了多少、请手动微调"✓
+    --   ⚠️ 调大后每次修正量也更大 ⇒ 想稳妥先开 `buildsnap_dry_run = true` 演练 ✓
+    buildsnap_z_max_cm = 500,
+    -- ★★ **高度学习**（默认 **true**）—— 2026-10-09 新增（玩家实测: 投影低于海平面、游戏建到合法高度，
+    --   而投影**没跟着挪** ⇒ 上面建筑放不下去 ✗）。
+    --   做法: 每次"落地确认"时，拿**游戏实际建出来的 z** 与**我们请求的 z** 比 ——
+    --     差 ≥5cm ⇒ 说明游戏改了高度 ⇒ **把整份投影的高度挪过去**（走已有的"挪投影高度"那条路）✓
+    --   上限仍受 `buildsnap_z_max_cm` 约束（差太多就只写日志 + 提示手动微调）✓
+    --   关掉（false）= 完全不学、不挪（回到旧行为）✓
+    buildsnap_learn_z = true,
     -- ★★★ **把"重发"排到下一帧**（默认 **true**）—— 2026-09-29 的**机制改动**（不是关功能）。
     --
     -- 背景: 水面上"拦下原请求 + 按吸附坐标重发"让游戏**卡死 1 次、崩 3 次**，崩溃栈的最内层
@@ -531,6 +545,15 @@ local DEFAULTS = {
     -- 需要的两个 SDK 文件（**从框架的 DeveloperSDK 目录拷进我们的 Scripts**，我们不打包）:
     --   `PalModOptionsClient.lua`、`pmo_json.lua`
     options_framework = true,
+    -- ★ **日志里每行带时间戳**（默认 **true**）—— 2026-10-09 新增（玩家要求）。
+    --   成本: 每行多一次 `os.date("%H:%M:%S")` + 9 个字符 ⇒ **可以忽略**（日志本来就是攒批写盘的）✓
+    --   排查时特别有用（黑匣子 `Log.solid` 的崩溃时间点也带上了）✓
+    log_timestamps = true,
+    -- ★ **日志行数上限**（默认 **20000**）—— 超过就**轮转**（把当前 `pwpr.log` 改名成
+    --   `pwpr.old.log`，重新开一份新的；只保留**一份**旧的）✓ 2026-10-09 新增（玩家要求）。
+    --   什么时候检查: ① 启动时（扫一次已有文件）；② 本次会话累计写入超过上限时 ✓
+    --   设 `0` = 不轮转（日志无限增长，玩家 2026-10-09 前就是这个状态: 到过 22 万行）✓
+    log_max_lines = 20000,
     -- ★ **危险区域**（米，默认 **0 = 不启用**）。
     --   出过"卡死/崩溃"的那一片：填上米数（例 25）之后，落在那片里的请求只**提示**、
     --   并且仍然按上面的"精细吸附窗口"决定要不要吸。
@@ -1109,9 +1132,11 @@ Config.KEY_GROUP = {
     buildsnap_learn_max_cm = 1,
     buildsnap_max_jump_cm = 1,
     buildsnap_skip_extra = 1,
-    buildsnap_safe_cm = 1, buildsnap_zone_m = 1, buildsnap_defer = 1,
+    buildsnap_safe_cm = 1, buildsnap_z_max_cm = 1, buildsnap_zone_m = 1, buildsnap_defer = 1,
     locale_utf8 = 1,
-    unipal_probe = 1, unipal_call_notif = 1, unipal_try_register = 1, unipal_create_modobject = 1, unipal_register_args = 1, unipal_allow_static_callobj = 1, unipal_register_delay_s = 1, options_framework = 1,
+    log_timestamps = 1, log_max_lines = 1,
+    unipal_probe = 1, unipal_call_notif = 1, unipal_try_register = 1, unipal_create_modobject = 1, unipal_register_args = 1,
+    options_framework = 1, unipal_allow_static_callobj = 1, unipal_register_delay_s = 1, options_framework = 1,
     -- ★ 按键绑定（2026-10-06）: 全是"正在起作用"的第 1 组
     key_capture = 1, key_library = 1, key_ghost = 1, key_layer = 1,
     key_site_cycle = 1, key_resnap = 1, key_mode = 1,

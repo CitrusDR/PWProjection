@@ -61,9 +61,27 @@ local function tr(s)
     return s
 end
 
+--- ★★ 2026-10-09 玩家要求: **每行带时间戳**（默认开，配置 `log_timestamps`）。
+---   成本: 一次 `os.date` + 9 个字符 ⇒ 可忽略（日志本来就攒批写盘）✓
+---   排查价值: 崩溃点（黑匣子 `Log.solid`）能看到**确切时刻** ✓
+local function stamp(s)
+    local ok, cfg = pcall(require, "pwpr_config")
+    if ok and cfg ~= nil then
+        local v = nil
+        pcall(function() v = cfg.get("log_timestamps") end)
+        if v == false then return s end
+    end
+    -- ★ 2026-10-09 玩家要求: **带日期**（`[2026-10-09 22:03:24] `）—— 日志可能跨天，
+    --   只有时分秒会对不上日期；多 11 个字符，成本仍可忽略 ✓
+    local ok2, ts = pcall(function() return os.date("[%Y-%m-%d %H:%M:%S] ") end)
+    if ok2 and type(ts) == "string" then return ts .. s end
+    return s
+end
+
 function Log.line(s)
-    s = tr(tostring(s))
+    s = stamp(tr(tostring(s)))
     Log.buffer[#Log.buffer + 1] = s
+    Log.n_lines = (Log.n_lines or 0) + 1     -- ★ 本次会话已写行数（轮转用）
     if #Log.buffer > Log.buffer_limit then
         table.remove(Log.buffer, 1)
     end
@@ -177,6 +195,58 @@ function Log.throttled_flush(min_s, name)
     return Log.flush(name)
 end
 
+--- ★★ 2026-10-09 玩家要求: **日志行数上限 + 轮转**（配置 `log_max_lines`，默认 20000）
+---   做法: 超过上限 ⇒ 把当前日志改名成 `<名字>.old.log`（覆盖旧的那一份，**只留一份**）
+---   两个检查点: ① 启动时 `Log.rotate_if_needed()`（扫一次已有文件）；
+---              ② 每次 flush 时看"本次会话已写行数"是否超限 ✓
+---   ⚠️ 轮转只动我们自己的日志文件（`pwpr.log` / `pwpr.old.log`），**不碰游戏/存档** ✓
+function Log.rotate_if_needed(force)
+    local okc, cfg = pcall(require, "pwpr_config")
+    local cap = 20000
+    if okc and cfg ~= nil then
+        local v = nil
+        pcall(function() v = tonumber(cfg.get("log_max_lines")) end)
+        if v ~= nil then cap = v end
+    end
+    if cap <= 0 and force ~= true then return false end       -- 0 = 不轮转
+    local path = Log.path_of()
+    -- ① 已有文件的行数（启动时扫一次；只在需要时扫）
+    local n_existing = 0
+    pcall(function()
+        local f = io.open(path, "rb")
+        if f ~= nil then
+            local data = f:read("*a") or ""
+            f:close()
+            for _ in tostring(data):gmatch("\n") do n_existing = n_existing + 1 end
+        end
+    end)
+    local total = n_existing + (Log.n_lines or 0)
+    if cap > 0 and total < cap and force ~= true then return false end
+    -- ② 轮转: 当前 → `.old.log`（覆盖）
+    local ok = true
+    pcall(function()
+        local f = io.open(path, "rb")
+        if f == nil then return end
+        local data = f:read("*a") or ""
+        f:close()
+        local g = io.open(path .. ".old.log", "wb")
+        if g ~= nil then
+            g:write(data)
+            g:close()
+        else
+            ok = false
+        end
+        os.remove(path)
+    end)
+    Log.n_lines = 0
+    if ok then
+        Log.buffer[#Log.buffer + 1] = stamp(string.format(
+            "（日志轮转: 上一份已存为 %s.old.log —— 超过 %d 行上限；"
+            .. "想关掉就把配置 log_max_lines 设成 0）", tostring(Log.NAME or "pwpr"), cap))
+    end
+    return ok
+end
+
 function Log.flush(name, reset_after)
     local path = Log.path_of(name)
     local text = table.concat(Log.buffer, "\r\n")
@@ -190,6 +260,8 @@ function Log.flush(name, reset_after)
         return false
     end
     if reset_after ~= false then Log.buffer = {} end
+    -- ★ 会话内累计超限 ⇒ 轮转（下次写盘就是新文件）
+    pcall(function() Log.rotate_if_needed(false) end)
     return true
 end
 

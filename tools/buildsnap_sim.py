@@ -491,6 +491,7 @@ REQUIRED_CONFIG_DEFAULTS = [
 
 LOG_LUA = os.path.join(ROOT, "mod", "PWProjection", "Scripts", "pwpr_log.lua")
 UTIL_LUA = os.path.join(ROOT, "mod", "PWProjection", "Scripts", "pwpr_util.lua")
+MAIN_LUA = os.path.join(ROOT, "mod", "PWProjection", "Scripts", "main.lua")
 
 
 PLACED_LUA = os.path.join(ROOT, "mod", "PWProjection", "Scripts",
@@ -1089,6 +1090,180 @@ def check_blackbox(verbose):
     return True
 
 
+# ---------------------------------------------------------------------------
+# ⑭ ★ 高度自适应阶梯的**作用域**（`.111` 修的那个 bug）
+#
+# 玩家实测 `.110`（日志见 docs/踩坑记录.md §74）:
+#   在 A 处给 `Glass_Foundation` 挪过一次投影高度之后，换到 B 处 / 换一张蓝图，
+#   **第一次**放置又被拒（投影比游戏允许的高度低 59 厘米）—— 旧代码的记忆只按
+#   **归一化 id** 分组 ⇒ 一眼看成"这一类的投影高度已经挪过了" ⇒ 直接降到"只吸 x/y"
+#   ⇒ **投影再也不跟着挪** ⇒ 高度差一直在，地基上的建筑全都放不下去 ✗
+#
+# ⇒ `.111` 起记忆的键 = **归一化 id + "这一处投影"**（蓝图 + 投影锚点 x/y，`z_key`）。
+#   这一节把阶梯复刻出来，并**同时跑一遍旧键**，把那个 bug 钉在自检里。
+# ---------------------------------------------------------------------------
+def z_key(idn, site):
+    """复刻 `BuildSnap.z_key`（`.111`）: 归一化 id + "这一处投影"（蓝图 + 锚点）。"""
+    return "%s|%s" % (idn, site)
+
+
+def z_ladder_sim(key_of):
+    """复刻"被拒 ⇒ 挪投影高度 / 降级"的阶梯（`pwpr_buildsnap.lua` 的落地确认回调
+    + `main.lua` 的 `on_z_rejected`），只保留 z 这一条线。
+
+    `key_of(idn, site)` 决定记忆的作用域 —— 传"只按 id"的版本就能复现 `.110` 的 bug。
+    返回 (state, place)，`place()` 模拟"放一下 + 1.2 秒后的结果"。
+    """
+    st = {"z_shifted": set(), "z_denied": set(), "z_learned": set(),
+          "offset_z": 0.0, "shifts": []}
+
+    def shift(dz, z_max):
+        """`BuildSnap.deps.on_z_rejected`（main.lua）: 挪不了就返回 false。"""
+        if abs(dz) < 5.0 or abs(dz) > z_max:
+            return False
+        st["offset_z"] += dz
+        st["shifts"].append(dz)
+        return True
+
+    def place(idn, site, proj_z, game_z, rejected, z_max=500.0):
+        """proj_z = **投影里这一件的 z**（已含当前高度偏移）; game_z = 游戏自己算的 z。
+        rejected=True 表示 1.2 秒内没有新建筑出现（游戏拒了这次放置）。
+        """
+        k = key_of(idn, site)
+        z_changed = k not in st["z_denied"]          # = Lua 的 snap_z_eff
+        tz = proj_z if z_changed else game_z         # 发出去的 z
+        if not rejected:
+            # 落地确认 ⇒ 高度学习（基准 = 投影里这一件的 z，不是"我们请求的 z"）
+            dz = game_z - proj_z
+            if abs(dz) >= 5.0 and k not in st["z_learned"] and shift(dz, z_max):
+                st["z_learned"].add(k)
+                return "built+learn%+.1f" % dz
+            return "built"
+        # 被拒 ⇒ 阶梯
+        if z_changed and k not in st["z_shifted"]:
+            dz = game_z - tz
+            if shift(dz, z_max):
+                st["z_shifted"].add(k)
+                return "reject+shift%+.1f" % dz
+            st["z_denied"].add(k)
+            return "reject+deny"
+        if z_changed:
+            st["z_denied"].add(k)
+            return "reject+deny"
+        return "reject(x/y)"
+
+    return st, place
+
+
+def test_z_ladder(verbose=True):
+    print("-" * 74)
+    print("⑭ ★ 高度自适应阶梯的**作用域**: 换一处 / 换一张蓝图要能重新挪投影"
+          "（玩家 `.110` 实测的那个 bug）")
+    site_a = "base_1@100,200"
+    site_b = "base_2@9000,8000"
+    rz_a, rz_b = -2063.0, -2102.0      # 两个位置上投影里这一件的高度
+    game_z = -2042.6                   # 游戏自己算出来的（合法）高度
+
+    # ---- ① `.110` 的键（只有 id）: 换一处之后**挪不动** ⇒ 复现玩家报的「投影不会移动」
+    st_old, place_old = z_ladder_sim(lambda idn, site: idn)
+    place_old("glass_foundation", site_a, rz_a, game_z, True)
+    place_old("glass_foundation", site_a, game_z, game_z, False)
+    old_b = place_old("glass_foundation", site_b,
+                      rz_b + st_old["offset_z"], game_z, True)
+    check("旧键（只按 id）: 换一处之后**不再挪投影** —— 复现玩家报的「投影不会移动」",
+          old_b == "reject+deny", old_b)
+    check("旧键: 全程只挪过 1 次（另一处那 59 厘米的高度差没人管）",
+          len(st_old["shifts"]) == 1, "挪过 %d 次" % len(st_old["shifts"]))
+
+    # ---- ② `.111` 的键（id + 这一处）: 换一处 ⇒ 重新挪 ⇒ 投影跟上游戏允许的高度
+    st_new, place_new = z_ladder_sim(z_key)
+    r_a1 = place_new("glass_foundation", site_a, rz_a, game_z, True)
+    place_new("glass_foundation", site_a, game_z, game_z, False)
+    r_b1 = place_new("glass_foundation", site_b,
+                     rz_b + st_new["offset_z"], game_z, True)
+    check("新键: A 处照旧先挪投影（%s）" % r_a1, r_a1.startswith("reject+shift"))
+    check("新键: 换到 B 处**重新挪投影高度**（%s）" % r_b1,
+          r_b1.startswith("reject+shift"))
+    check("新键: 换一处后投影高度对齐到游戏允许的高度（偏移 %.1f）"
+          % st_new["offset_z"],
+          abs((rz_b + st_new["offset_z"]) - game_z) < 0.5)
+    same_b = place_new("glass_foundation", site_b,
+                       rz_b + st_new["offset_z"], game_z, True)
+    check("同一处再被拒 ⇒ 才降级成「只吸 x/y」（%s）—— 防「反复挪」把投影挪飞"
+          % same_b, same_b == "reject+deny")
+
+    # ---- ③ 同一处的**另一块**记录上还差一点（阶梯已经用过 ⇒ 只吸 x/y）
+    #         ⇒ 高度学习在"真正放上去之后"把投影校准过去（`.111` 把基准改成投影的 z）
+    st3, place3 = z_ladder_sim(z_key)
+    place3("glass_foundation", site_a, rz_a, game_z, True)
+    place3("glass_foundation", site_a, game_z, game_z, False)
+    r_d1 = place3("glass_foundation", site_a, game_z - 12.4, game_z, True)
+    r_d2 = place3("glass_foundation", site_a, game_z - 12.4, game_z, False)
+    check("同一处的另一块: 阶梯已用过 ⇒ 只吸 x/y（%s）" % r_d1,
+          r_d1 == "reject+deny")
+    check("同一处的另一块: 高度学习把投影挪过去（%s）" % r_d2,
+          r_d2 == "built+learn+12.4")
+    rec2_z_now = (game_z - 12.4) + (st3["shifts"][-1] if st3["shifts"] else 0.0)
+    check("高度学习之后那一块投影正好落在游戏的高度上（%.1f）" % rec2_z_now,
+          abs(rec2_z_now - game_z) < 0.5)
+
+    # ---- ④ 一处 + 一类**只学一次**（否则"每放一件都挪一点"会累积漂移）
+    st4, place4 = z_ladder_sim(z_key)
+    e1 = place4("glass_foundation", site_a, game_z - 10.0, game_z, False)
+    e2 = place4("glass_foundation", site_a, game_z, game_z - 10.0, False)
+    check("第一次: 学（%s）" % e1, e1 == "built+learn+10.0")
+    check("同一处同一类第二次: **不再挪**（%s）" % e2, e2 == "built")
+
+    # ---- ⑤ 差得太多（超过 `buildsnap_z_max_cm`）: 挪不了 ⇒ 当场降级（不静默）
+    st5, place5 = z_ladder_sim(z_key)
+    f1 = place5("glass_foundation", site_a, game_z - 600.0, game_z, True)
+    check("差 6 米（超过上限 500）: 挪不了 ⇒ 降级成只吸 x/y（%s）" % f1,
+          f1 == "reject+deny")
+    check("差得太多时**一次都没挪**（不许硬挪）", st5["shifts"] == [])
+
+
+def check_z_scope(verbose):
+    """★ `.111` 源码守卫: 高度自适应/降级记忆必须**按"处"分组**，学习基准必须是投影的 z。
+
+    只按 id 分组 = 玩家实测的那个 bug（换一处之后投影再也不跟着挪）；
+    基准用"我们请求的 z" = 「只吸 x/y」那一级永远学不到高度差。两条都钉住。
+    """
+    try:
+        with open(LUA, "r", encoding="utf-8") as f:
+            snap_src = f.read()
+        with open(MAIN_LUA, "r", encoding="utf-8") as f:
+            main_src = f.read()
+    except OSError as exc:
+        print("[严重] 作用域守卫: 读不到源码: {}".format(exc))
+        return False
+
+    bad = []
+    if "function BuildSnap.z_key(" not in snap_src:
+        bad.append("pwpr_buildsnap.lua 没有 BuildSnap.z_key（记忆的键）")
+    if "BuildSnap.deps.site_key" not in snap_src:
+        bad.append("pwpr_buildsnap.lua 没有用 deps.site_key（拿「这一处投影」的身份）")
+    for pat in ("BuildSnap.z_shifted[zkey]", "BuildSnap.z_denied[zkey]"):
+        if pat not in snap_src:
+            bad.append("没有按「处」记: " + pat)
+    for old in ("BuildSnap.z_shifted[idn]", "BuildSnap.z_denied[idn]",
+                "BuildSnap.z_denied[id_norm_now]",
+                "BuildSnap.z_shifted[id_norm_now]"):
+        if old in snap_src:
+            bad.append("还有「只按 id」的旧写法（就是那个 bug）: " + old)
+    if "BuildSnap.deps.site_key = function()" not in main_src:
+        bad.append("main.lua 没有定义 BuildSnap.deps.site_key")
+    if "local ref = pc.proj_z" not in snap_src:
+        bad.append("高度学习的基准不是 pc.proj_z（只吸 x/y 那一级会永远学不到）")
+    if "proj_z = res.z" not in snap_src:
+        bad.append("请求里没有把「投影里这一件的 z」（proj_z = res.z）带下去")
+
+    for m in bad:
+        print("  [失败] " + m)
+    if not bad:
+        print("  [通过] 作用域守卫（记忆按「处」分组 + 学习基准是投影的 z + 旧写法已清除）")
+    return not bad
+
+
 def parse_frozen_tail(text):
     """Python 复刻 `BuildSnap.learn_frozen_from_log` 的尾部解析（Lua 侧改了要同步改）。
 
@@ -1183,6 +1358,7 @@ def main():
     test_pick_nearest_similar(verbose)
     test_thresholds(verbose)
     test_frozen_parser(verbose)
+    test_z_ladder(verbose)
     # 默认值守卫（读 pwpr_config.lua）+ 投影侧接口守卫: 失败直接算失败
     if not check_config_defaults(verbose):
         FAILED.append("配置默认值守卫")
@@ -1190,6 +1366,8 @@ def main():
         FAILED.append("投影侧接口守卫")
     if not check_blackbox(verbose):
         FAILED.append("黑匣子守卫")
+    if not check_z_scope(verbose):
+        FAILED.append("高度自适应作用域守卫")
     print("=" * 74)
     if FAILED:
         print("结果: %d 项失败: %s" % (len(FAILED), ", ".join(FAILED)))
