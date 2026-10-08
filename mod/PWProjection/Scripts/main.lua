@@ -2139,8 +2139,62 @@ bind_action = function(id, fn)
     end
     -- ★ 2026-10-07: 玩家在「模组选项」里**正在捕获按键**时，跳过我们自己的处理
     --   （框架文档推荐的 `capture_active()` 用法）—— 否则捕获时会把功能也触发一遍。
+    --
+    -- ★★★ 2026-10-08 晚（`.114`）实测修正: **这个守卫原来是无条件信任 + 静默跳过**，
+    --   而框架的"正在捕获"是一个**共享标志**（`shared_set(prefix.."CaptureActive", true/false)`）：
+    --   只要有一条清理路径没跑到（比如点了某一行键、然后界面以非预期方式关掉），
+    --   这个标志就会**卡在 true**，而它是 UE4SS 的**进程级共享变量** ⇒
+    --   **我们的每一个动作都会被自己静默跳过** ⇒ 玩家看到的正是
+    --   「改键+操作几次之后，**什么按键都不管用了**，游戏里移动正常」，
+    --   而且**日志里一行都不会有**（因为 return 在写日志之前）✗✗
+    --   ⇒ 现在两件事:
+    --     ① **跳过了要留痕**（每 10 秒最多一条，免得刷屏）；
+    --     ② **安全阀**: 连续 true 超过 `CAPTURE_GUARD_MAX_S` 秒就**不再信任它**
+    --        （写一条 `Log.solid` 黑匣子 + 照常执行动作）—— 宁可捕获时误触发一下，
+    --        也不能让"所有热键全哑"这种状态无声挂着。
+    local CAPTURE_GUARD_MAX_S = 60.0
+    local capture_since = nil
+    local capture_skip_n = 0
+    local capture_last_log = 0
+    local capture_valve_done = false
     local wrapped = function(...)
-        if Options.capture_active() then return end
+        local active = Options.capture_active()
+        if active then
+            local now = os.clock()
+            if capture_since == nil then capture_since = now end
+            local held = now - capture_since
+            capture_skip_n = capture_skip_n + 1
+            if now - capture_last_log >= 10.0 then
+                capture_last_log = now
+                Log.emit(string.format(
+                    "  [keys] 跳过 %s: 框架报告「正在捕获按键」（CaptureActive=true，已持续 %.0f 秒，"
+                    .. "累计跳过 %d 次）—— 若你没有在改键，这个标志就是卡住了（重启游戏可清）",
+                    tostring(id), held, capture_skip_n))
+            end
+            if held < CAPTURE_GUARD_MAX_S then
+                return
+            end
+            -- 安全阀: 卡太久 ⇒ 不再信任它（只报一次）
+            if not capture_valve_done then
+                capture_valve_done = true
+                if Log ~= nil and Log.solid ~= nil then
+                    pcall(Log.solid, string.format(
+                        "  [keys] ● 安全阀: CaptureActive 已持续 %.0f 秒 ⇒ 不再信任它，"
+                        .. "照常执行动作（框架的捕获标志卡住了；重启游戏可彻底清掉）", held))
+                end
+                Log.emit(string.format(
+                    "  [keys] ★ 安全阀生效: 框架的「正在捕获按键」标志卡了 %.0f 秒 ⇒ 忽略它、"
+                    .. "按键恢复工作（不放心就重启游戏）", held))
+            end
+        else
+            if capture_since ~= nil and capture_skip_n > 0 then
+                Log.emit(string.format(
+                    "  [keys] 框架的捕获标志已恢复 false（期间跳过 %d 次）", capture_skip_n))
+            end
+            capture_since = nil
+            capture_skip_n = 0
+            capture_valve_done = false
+        end
         return fn(...)
     end
     return try_bind(id .. "=" .. kn, kn, {}, wrapped)
@@ -2198,9 +2252,49 @@ end
 -- 做法: ① 宿主 actor 的路径在生成时就落了盘 ⇒ 按路径找回并销毁（`Ghost.cleanup_leftover_host`）；
 --       ② 提示控件按类名找活实例、只收"在视口里"的那些（`Hud.cleanup_leftovers`）。
 -- 延迟 3 秒（等世界稳定），走游戏线程；全程 pcall，失败只记一行日志 ✓
+-- ★★★ 2026-10-08 晚（`.118`）**重载预算安全阀 —— 改成"写文件"计数**
+--
+--   ⚠️ `.117` 用 `shared_get/shared_set` 是**错的**（实测失败）: 日志连写 **11 次
+--   "本进程第 1 次加载本模组"**、安全阀**一次都没触发** ⇒ **UE4SS 的 `shared_*` 存储是按
+--   mod 实例的，重载即清空** ✗（同一局 `Reinstalling mod: PWProjection` **10 次**、
+--   钩子号一路到 `#35`、`安全阀 0 条`）⇒ 连点 10 次照样卡死 ✗
+--   ⇒ 现在改成**写文件**（跨重载一定还在）+ 用"距上次重载多久"判断是不是新开的一局游戏 ✓
+local RELOAD_BUDGET = 6
+local RELOAD_GAP_S = 120          -- 距上次重载 > 2 分钟 ⇒ 当成新的一局游戏，计数从 1 开始
+local reload_n = 1
+local reload_over = false
+pcall(function()
+    local p = Util.script_dir .. "pwpr_reloads.txt"
+    local now = os.time()
+    local last_t, last_n = nil, 0
+    local f = io.open(p, "r")
+    if f ~= nil then
+        local txt = f:read("*a") or ""
+        f:close()
+        last_t = tonumber(string.match(txt, "^(%d+)"))
+        last_n = tonumber(string.match(txt, "|(%d+)")) or 0
+    end
+    if last_t ~= nil and (now - last_t) <= RELOAD_GAP_S then
+        reload_n = last_n + 1
+    end
+    local w = io.open(p, "w")
+    if w ~= nil then
+        w:write(string.format("%d|%d", now, reload_n))
+        w:close()
+    end
+end)
+reload_over = reload_n > RELOAD_BUDGET
+
+-- 启动清扫（超预算 ⇒ 本次**跳过**，少一次"销毁 + 重建上千实例"）
 pcall(function()
     Sched.game_thread(function()
         pcall(function()
+            if reload_over then
+                Log.emit(string.format(
+                    "★ 本进程已重载 %d 次（> %d）⇒ 本次**跳过启动清扫**（连点保存时别再折腾投影）"
+                    .. "；**请重启游戏**", reload_n, RELOAD_BUDGET))
+                return
+            end
             local n1, n2 = 0, 0
             if Config.get("ghost_enabled") ~= false then
                 n1 = Ghost.cleanup_leftover_host() or 0
@@ -2234,6 +2328,26 @@ pcall(function()
     end, 3000)
 end)
 
+-- ★★★ 2026-10-08 晚（`.113` 加的这段"请重启游戏"提示，`.114` **降级为参考信息**）:
+--   我一开始把 `[keys] 有 N 个键已经是注册状态` 当成"按键失效"的原因 —— **错了** ✗
+--   玩家实测: 按键在游戏里**一直能用**（改键后按一次就生效）。
+--   真实机制见 §75-2: 框架启动时装了 **94 个按键捕获绑定**（我们那些键都在里面），
+--   而 UE4SS **允许多个回调挂同一个键** ⇒ 我们的回调照样会响 ✓
+--   ⇒ 真凶是**框架的 `CaptureActive` 共享标志卡在 true**（我们自己的守卫静默跳过所有动作），
+--     已在 `bind_action` 里加了"留痕 + 60 秒安全阀" ✓ 这里只保留一条**参考信息**。
+pcall(function()
+    Sched.game_thread(function()
+        pcall(function()
+            local ntk = tonumber(Keys.n_pre_taken) or 0
+            if ntk <= 0 then return end
+            Log.line(string.format(
+                "  [keys] 参考: %d 个键在注册前已有占用（多半是设置框架的按键捕获绑定）——"
+                .. "**不代表按键失效**；若真的按了没反应，先看上面有没有"
+                .. "「跳过 … CaptureActive=true」那些行", ntk))
+        end)
+    end, 1000)
+end)
+
 -- ---------------------------------------------------------------------------
 -- ★★ 游戏内设置面板（Mod Options Framework）—— 2026-10-07 起
 --   · 纯 Lua 调用（`register_when_ready` 自己处理"框架还没就绪"的时序）⇒ 启动期安全 ✓
@@ -2243,6 +2357,13 @@ if Config.get("options_framework") ~= false then
     -- ★★ 2026-10-08: **UI 里选的"方向键默认模式"接到运行时**（玩家实测 #2 的后半）
     --   UI 里那一行是"启动/应用时的默认模式"；游戏内按切换键仍可随时循环切换 ✓
     pcall(function()
+        -- ★ `.117`: 设置页"保存之后怎么生效"由配置决定（默认立刻重载；卡死可改 game_restart）
+        local am2 = Config.get("options_apply_mode")
+        if am2 == "game_restart" or am2 == "event" then
+            Options.apply_mode = am2
+            Log.emit("配置: 设置页保存后的生效方式 = " .. am2
+                .. "（不是「立刻重载」；保存后请按提示重启游戏）")
+        end
         local am = Options.arrow_mode
         if type(am) == "string" and am ~= "" then
             for i = 1, #PLACE_MODES do
@@ -2608,10 +2729,53 @@ BuildSnap.deps.on_z_rejected = function(id, dz, why)
 end
 
 do
-    local okB, whyB = BuildSnap.install()
-    Log.emit(string.format("建造吸附钩子: %s  %s", tostring(okB), tostring(whyB)))
-    print(TAG .. " build-snap hook: " .. (okB and "OK" or "FAILED")
-        .. " (" .. Util.ascii(tostring(whyB)) .. ")")
+    -- ★★★ 2026-10-08 晚（`.118`）**重载预算安全阀**（玩家实测"连按几次保存 ⇒ 游戏卡死"）
+    --
+    --   根因（有日志实证，见 `docs\踩坑记录.md` §76）: 在设置页点保存 = 框架 `restart_mod`
+    --   **重载本模组**；而 UE4SS 的 `NotifyOnNewObject` 通知（以及钩子）**不随重载撤销**
+    --   ⇒ 每重载一次就多一层**进程级**回调，每一件建筑造出来都要跑一遍 ⇒
+    --   连点 9~10 次后**游戏线程卡死在重载途中** ✗（转储都写不出来，只有 0 字节 dump）
+    --
+    --   ⚠️ `.117` 第一版用 `shared_get/shared_set` **失败**（实测: 日志连写 11 次
+    --   "本进程第 1 次加载"、安全阀 0 次触发）⇒ **UE4SS 的 shared_* 是按 mod 实例的**、
+    --   重载即清空 ✗ ⇒ `.118` 改成**写文件计数**（`reload_n` / `reload_over` 在上面算好）✓
+    --
+    --   做法（只限制"真出事的那个子集"，不动正常用法 —— AGENTS 规矩 3c）:
+    --     · 前 6 次重载 ⇒ **一切照旧**（功能完全不变）✓
+    --     · 超过预算 ⇒ 这一次**不注册放置钩子/新建通知**、**也不做启动清扫**
+    --       （少一次"销毁 + 重建上千实例"），日志 + 屏幕各说一句"请重启游戏" ✓
+    if reload_n <= 1 then
+        Log.emit("本进程第 1 次加载本模组（正常）")
+    else
+        Log.emit(string.format(
+            "本进程第 %d 次加载本模组（在设置页点一次保存 = 重载一次；UE4SS 的通知/钩子"
+            .. "被卸载后仍会留痕 ⇒ 攒多了会卡死，预算是 %d 次）", reload_n, RELOAD_BUDGET))
+    end
+    if reload_over then
+        Log.solid(string.format(
+            "  [reload] ● 安全阀: 本进程已重载 %d 次（> %d）⇒ **本次不注册放置钩子/新建通知**，"
+            .. "避免进程级回调继续累积导致卡死；请重启游戏恢复（重启后计数清零）",
+            reload_n, RELOAD_BUDGET))
+        Log.emit("★ 重载次数过多 ⇒ 本次**建造吸附与落地确认不注册**（其它功能正常）。"
+            .. "**请重启游戏**；想彻底避免就改配置 `options_apply_mode = \"game_restart\"`"
+            .. "（保存后不重载、只提示重启）")
+        pcall(function()
+            Sched.game_thread(function()
+                pcall(function()
+                    Notify.show(string.format(
+                        "★ 本进程已重载 %d 次 ⇒ 本次**建造吸附暂不生效**（防止卡死）；"
+                        .. "**请重启游戏**恢复", reload_n),
+                        string.format("mod reloaded %d times; build-snap skipped this time -- restart the game",
+                            reload_n))
+                end)
+            end, 9000)
+        end)
+    else
+        local okB, whyB = BuildSnap.install()
+        Log.emit(string.format("建造吸附钩子: %s  %s", tostring(okB), tostring(whyB)))
+        print(TAG .. " build-snap hook: " .. (okB and "OK" or "FAILED")
+            .. " (" .. Util.ascii(tostring(whyB)) .. ")")
+    end
 end
 
 -- ---------------------------------------------------------------------------

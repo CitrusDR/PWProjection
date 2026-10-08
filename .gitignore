@@ -50,3 +50,14 @@ id_ed25519*
 Thumbs.db
 desktop.ini
 pwpr_placements.json
+
+# ---- 用户数据（绝不提交；2026-10-08 开放仓库前补）----
+pwpr_keys.json*
+pwpr_config.json*
+pwpr_reloads.txt
+
+# ---- 发布用大图（要进仓库的先压小，见 docs/发布/screenshots）----
+img/
+
+# ---- 玩家要求不提交 ----
+docs/演示视频脚本.md

@@ -85,6 +85,10 @@ UE4SS_GLOBALS = {
     "RegisterHook", "UnregisterHook",
     "RegisterKeyBind", "RegisterKeyBindAsync", "IsKeyBindRegistered",
     "UnregisterKeyBind", "RegisterKey",
+    # ★ 2026-10-08: **跨 mod 共享存储**（UE4SS 原生；设置框架 PalModOptions 就在用
+    #   `shared_get/share_set` 传 `CaptureActive`）—— 我们用它记"本进程重载了几次"
+    #   做重载预算安全阀（`.117`，见 main.lua 与 `docs\踩坑记录.md` §76）✓
+    "shared_get", "shared_set", "shared_has",
     "RegisterConsoleCommandHandler", "RegisterConsoleCommandGlobalHandler",
     "RegisterLoadMapPreHook", "RegisterLoadMapPostHook",
     "RegisterInitGameStatePreHook", "RegisterInitGameStatePostHook",

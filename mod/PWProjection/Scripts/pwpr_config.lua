@@ -545,6 +545,15 @@ local DEFAULTS = {
     -- 需要的两个 SDK 文件（**从框架的 DeveloperSDK 目录拷进我们的 Scripts**，我们不打包）:
     --   `PalModOptionsClient.lua`、`pmo_json.lua`
     options_framework = true,
+    -- ★★★ 2026-10-08 晚（`.117`）玩家要求: **设置页点保存之后怎么生效**
+    --   · `"restart_mod"`（默认）= 框架**立刻重载本模组** ⇒ 改完马上生效（体验最好）✓
+    --   · `"game_restart"`     = 只提示"请重启游戏"、**不重载** ⇒ 保存后要重启游戏才生效
+    --   · `"event"`            = 不重载也不提示（只写 ini；一般别用）
+    --   为什么留着这个开关（玩家定稿）: **连点保存** = 连续重载本模组，而 UE4SS 的
+    --   `NotifyOnNewObject` 通知**不随重载撤销** ⇒ 进程级回调线性累积 ⇒ 实测连点
+    --   9~10 次后**游戏卡死** ✗（见 `docs\踩坑记录.md` §76）。默认保持"立刻重载"
+    --   （好用优先）；真遇到卡死就改成 `"game_restart"` ✓
+    options_apply_mode = "restart_mod",
     -- ★ **日志里每行带时间戳**（默认 **true**）—— 2026-10-09 新增（玩家要求）。
     --   成本: 每行多一次 `os.date("%H:%M:%S")` + 9 个字符 ⇒ **可以忽略**（日志本来就是攒批写盘的）✓
     --   排查时特别有用（黑匣子 `Log.solid` 的崩溃时间点也带上了）✓
@@ -1137,6 +1146,7 @@ Config.KEY_GROUP = {
     log_timestamps = 1, log_max_lines = 1,
     unipal_probe = 1, unipal_call_notif = 1, unipal_try_register = 1, unipal_create_modobject = 1, unipal_register_args = 1,
     options_framework = 1, unipal_allow_static_callobj = 1, unipal_register_delay_s = 1, options_framework = 1,
+    options_apply_mode = 1,
     -- ★ 按键绑定（2026-10-06）: 全是"正在起作用"的第 1 组
     key_capture = 1, key_library = 1, key_ghost = 1, key_layer = 1,
     key_site_cycle = 1, key_resnap = 1, key_mode = 1,

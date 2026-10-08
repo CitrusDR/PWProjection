@@ -1848,20 +1848,42 @@ function BuildSnap.schedule_confirm(target_desc, delay_ms, extra_note, rec_idx, 
                             local dz = az - ref
                             if math.abs(dz) >= 5.0 then
                                 local lk = tostring(pc.z_key or pc.id_norm or "")
-                                if BuildSnap.z_learned[lk] == true then
+                                local rec = BuildSnap.z_learned[lk]
+                                local tries = (type(rec) == "table") and (tonumber(rec.n) or 0) or 0
+                                -- ★★★ 2026-10-08 晚（`.116`）玩家实测: 学习日志一直写
+                                --   `（这一处已经学过 ⇒ **不再挪**，避免累积漂移）`，而**投影压根没动过**
+                                --   ⇒ 原来"学过一次就永久封口"会把"那次没挪成（被上限拦/回调失败）"
+                                --     也当成"学过了" ⇒ 投影永远比实物低、地基一直对不上 ✗✗
+                                --   ⇒ 现在只有**真的挪成功**（`moved == true`）才封口；
+                                --     没挪成就允许重试（最多 3 次，避免刷屏）✓
+                                if type(rec) == "table" and rec.moved == true then
                                     Log.emit(string.format(
                                         "  [bsnap] 高度学习: 投影 z=%.1f 游戏实际 z=%.1f"
-                                        .. " 差 %+.1f 厘米（这一处已经学过 ⇒ **不再挪**，避免累积漂移）",
+                                        .. " 差 %+.1f 厘米（这一处学过**并且挪成功过** ⇒ 不再挪，"
+                                        .. "避免累积漂移；要重新校准就换一处 / 重启游戏）",
                                         ref, az, dz))
-                                else
-                                    BuildSnap.z_learned[lk] = true
+                                elseif tries >= 3 then
                                     Log.emit(string.format(
                                         "  [bsnap] 高度学习: 投影 z=%.1f 游戏实际 z=%.1f 差 %+.1f 厘米"
-                                        .. " ⇒ 把投影高度挪过去", ref, az, dz))
+                                        .. "（试了 3 次都没挪成 ⇒ 放弃；请手动用方向键/小键盘 9、3 微调）",
+                                        ref, az, dz))
+                                else
+                                    Log.emit(string.format(
+                                        "  [bsnap] 高度学习: 投影 z=%.1f 游戏实际 z=%.1f 差 %+.1f 厘米"
+                                        .. " ⇒ 把投影高度挪过去%s", ref, az, dz,
+                                        (tries > 0) and string.format("（第 %d 次重试）", tries + 1) or ""))
+                                    local moved = false
                                     if BuildSnap.deps.on_z_rejected ~= nil then
-                                        pcall(BuildSnap.deps.on_z_rejected,
-                                            tostring(pc.id or ""), dz,
-                                            "按游戏实际建出的高度学习")
+                                        pcall(function()
+                                            moved = BuildSnap.deps.on_z_rejected(
+                                                tostring(pc.id or ""), dz,
+                                                "按游戏实际建出的高度学习") == true
+                                        end)
+                                    end
+                                    BuildSnap.z_learned[lk] = { n = tries + 1, moved = moved }
+                                    if moved ~= true then
+                                        Log.emit("  [bsnap] 高度学习: 这次**没能挪**（见上一行的原因）"
+                                            .. " ⇒ 下次放上还会再试（最多 3 次）")
                                     end
                                 end
                             end
@@ -1923,23 +1945,34 @@ function BuildSnap.schedule_confirm(target_desc, delay_ms, extra_note, rec_idx, 
                                 .. "挪 %+.0f 厘米**（对齐到游戏允许的高度）⇒ **再放一次**即可"
                                 .. "（高度继续跟投影）", tostring(pc.id), dz))
                         else
-                            BuildSnap.z_denied[zk] = true
+                            -- ★★★ 2026-10-08 晚（`.116`）玩家实测: 「自动移动高度后，再放置建筑
+                            --   **并不会吸附高度**，放了好几个和投影对不上的地基」✗
+                            --   日志证据: `…挪不了投影高度（回调没挪成…）⇒ **这一处**的
+                            --   Glass_foundation 之后只吸 x/y` ⇒ 之后每一件都 `高度用游戏给的`
+                            --   ⇒ 地基全和投影对不上 ✗✗
+                            --   而那个"挪不了"经常只是**高度差本来就 <5 厘米**（噪声）⇒
+                            --   被判成"这类以后不吸高度" = **拿功能换安全**（AGENTS 规矩 3c）。
+                            --   ⇒ 现在**不再自动降级**: 继续吸高度；真要单独关掉高度就显式设
+                            --     `buildsnap_snap_z = false`（全模组生效，F8 即时）✓
                             Log.emit(string.format(
-                                "  [bsnap] 这次「改了高度」被游戏拒了，而且**挪不了投影高度**"
-                                .. "（%s；若上面那行写了「超过上限」就是差得太多）"
-                                .. "⇒ **这一处**的 %s 之后只吸 x/y。**马上再放一次**"
-                                .. "就是降级后的策略；想恢复吸高度: **换一处 / 换一张蓝图会自动"
-                                .. "恢复**（或删掉/移走 pwpr.log 后重启）",
-                                (dz == nil) and "读不到高度差" or "回调没挪成",
-                                tostring(pc.id)))
+                                "  [bsnap] 这次「改了高度」被游戏拒了，且**没挪成投影高度**"
+                                .. "（%s）⇒ **仍然继续吸高度**（不降级）。"
+                                .. "若同一处反复被拒，看那行的原因：多数是**素材不足**或"
+                                .. "**位置不合法**，不是高度问题；确实只想吸 x/y 就设 "
+                                .. "`buildsnap_snap_z = false`",
+                                (dz == nil) and "读不到高度差"
+                                or "回调没挪成（高度差 <5 厘米、或超过 buildsnap_z_max_cm）"))
                         end
                     elseif zcase then
-                        BuildSnap.z_denied[zk] = true
+                        -- 这一处已经挪过一次还是被拒: 同样**不降级**（见上），
+                        -- 只记"这条记录刚被拒"的闸 ③，免得玩家马上重放同一条时又被拒
+                        if BuildSnap.rejected == nil then BuildSnap.rejected = {} end
+                        BuildSnap.rejected[pc.rec_idx] = os.clock()
                         Log.emit(string.format(
                             "  [bsnap] **这一处**已经为 %s 挪过一次投影高度、这次还是被拒"
-                            .. " ⇒ **这一处**的 %s 之后只吸 x/y（高度改由「高度学习」"
-                            .. "在真正放上去之后自动校准）；**换一处 / 换一张蓝图会自动恢复**",
-                            tostring(pc.id), tostring(pc.id)))
+                            .. " ⇒ **保持吸高度**（不降级成只吸 x/y）。"
+                            .. "多半不是高度问题: 看是不是素材不足 / 位置不合法 / 摆得太偏",
+                            tostring(pc.id)))
                     else
                         -- ★ 记住"这一条刚被游戏拒绝过"（闸 ③ 用: 短时间内不再吸它）
                         if BuildSnap.rejected == nil then BuildSnap.rejected = {} end

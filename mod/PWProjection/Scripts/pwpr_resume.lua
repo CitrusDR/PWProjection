@@ -397,6 +397,24 @@ function Resume.remember(bp_file, anchor, yaw, offset, size, margin_cm)
     --   拖动它等于让"已建好的序号"整体平移 ⇒ 之后既藏错件、也对不上原位。
     --   （没进度的临时位置仍然可以随便挪 —— 它只是"上次投影放在哪"。）
     if count_placed(site) > 0 then
+        -- ★★★ 2026-10-08 晚（`.115`）修 —— 玩家实测: 「水面放置触发高度自适应（偏移 159 → 178），
+        --   关掉再打开投影**又变回 159** ⇒ 再放一次会重新算高度 ⇒ 两次吸附高度不一致、地板对不齐」。
+        --   真因: 原来这里**直接 return**，于是"已经有进度的那一处"**偏移一个字节都不更新** ——
+        --   **微调（方向键）和高度自适应都不会被记住** ✗（日志却写着"已记进位置记忆"，是假的 ✗）。
+        --   更糟的连锁反应: 重开投影时套用旧偏移 ⇒ 投影与真实建筑**位置对不上**
+        --   ⇒ "放投影后按世界核对"那一步认不出已建好的件（日志 `核对 8 件（0 件确认还在）`）
+        --   ⇒ **已放上的又全画出来** ✗✗
+        --   ⇒ 现在: **锚点 x/y/z 仍然不许拖**（见下面那段理由，保护"已建好的序号"），
+        --     但 **偏移 ox/oy/oz 与朝向必须更新**（这才是"上次投影放在哪"的语义）✓
+        site.ox = tonumber(offset and offset.x) or site.ox
+        site.oy = tonumber(offset and offset.y) or site.oy
+        site.oz = tonumber(offset and offset.z) or site.oz
+        if tonumber(yaw) ~= nil then site.yaw = tonumber(yaw) end
+        if type(size) == "table" then
+            site.sx = (tonumber(size.x) or 0.0) * 100.0
+            site.sy = (tonumber(size.y) or 0.0) * 100.0
+            site.sz = (tonumber(size.z) or 0.0) * 100.0
+        end
         site.t = now_s()
         Resume.adopt(bp_file, site)
         Resume.mark_dirty()

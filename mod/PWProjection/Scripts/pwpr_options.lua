@@ -68,11 +68,21 @@ local CORE = {
 --   想启用 ⇒ 在 UI 里改成别的键；想解绑 ⇒ 点「恢复默认值」（回到 `F24`）✓
 --   ★ 顺序按玩家要求: 常用（**方向键两条必须相邻**）→ 诊断/次要 → 最后才是"重载配置、帮助"
 --   `grp` = 页面分组（1 常用 / 2 诊断 / 3 其他）
+--   ★★ `bound_default = true`（2026-10-09 晚新增，构建 .112）: **值等于默认值也照常绑定**。
+--      只给「渲染能力探测」用 —— 它是"投影能不能用"的第一道门，**必须开箱可用**，不能默认解绑 ✗
 local OPTIONAL = {
+    -- ★★★ `.112` 玩家定稿（发布前的首次上手阻塞点）:
+    --   投影的解锁流程是「先按 N 跑能力探测（通过后自动写 ghost_enabled = true）」，
+    --   而装了框架的用户**可选键默认不绑（F24）** ⇒ 新用户按 N 没反应、按 K 只看到
+    --   「投影没解锁」⇒ 装完像是坏的 ✗
+    --   ⇒ 把「渲染能力探测」挪到**「常用」第一条**、默认值 **`N`**，并用 `bound_default`
+    --     跳出"值 == 默认值 ⇒ 当作未启用"那条规则（其余 7 个可选键**仍然默认不启用**）✓
+    --   ※ 框架**没有 button 类型**（只有 boolean/integer/number/text/enum/keybind/section，
+    --     见 `PalModOptionsClient.lua` 的类型校验），所以"做成按钮单击触发"这条路走不通。
+    { id = "probe",        key = "k_probe",        label = "渲染能力探测（★ 首次必跑）", desc = "第一次用投影前跑一次；通过后自动解锁投影（写入 ghost_enabled = true）。", def = "N", grp = 1, bound_default = true },
     { id = "resnap",       key = "k_resnap",       label = "重新定位到脚下", desc = "把投影重新定位到你脚下（记成新的一处位置）。", def = "F24", grp = 1 },
     { id = "site_cycle",   key = "k_site_cycle",   label = "换一处记录",     desc = "在同一张蓝图的多处放置记录之间切换。",       def = "F24", grp = 1 },
     { id = "mode",         key = "k_mode",         label = "方向键模式切换", desc = "循环切换方向键模式（移动/旋转/材质）。",      def = "F24", grp = 1 },
-    { id = "probe",        key = "k_probe",        label = "渲染能力探测",   desc = "诊断用: 探测渲染能力。",                     def = "F24", grp = 2 },
     { id = "notify_probe", key = "k_notify_probe", label = "屏幕提示探测",   desc = "诊断用: 探测屏幕提示通道。",                 def = "F24", grp = 2 },
     { id = "snap_key",     key = "k_snap_key",     label = "投影对齐(建筑)", desc = "把投影对齐到附近已建好的建筑。",               def = "F24", grp = 2 },
     { id = "reload",       key = "k_reload",       label = "重载配置",       desc = "重新读取 pwpr_config.json（不重绑按键）。",  def = "F24", grp = 3 },
@@ -120,7 +130,8 @@ local function build_schema()
         labels = { ["zh-Hans"] = "（下面按分组排列）" } }
     -- ★ 按 `grp` 分三段（玩家要求: 常用 → 诊断 → 其他），**方向键两条必须相邻**
     local SEC = {
-        [1] = "可选按键（常用）—— ★ 默认值 F24 表示**不启用**；改成别的键才生效，想解绑点「恢复默认值」",
+        [1] = "可选按键（常用）—— ★ 「渲染能力探测」默认 `N`（**首次必跑**，一直可用）；"
+            .. "其余各项默认值 F24 表示**不启用**，改成别的键才生效，想解绑点「恢复默认值」",
         [2] = "可选按键（诊断 / 次要）—— 同上，默认不启用",
         [3] = "其他（重载配置、帮助）—— 同上，默认不启用",    }
     local done_sec = {}
@@ -161,8 +172,11 @@ local function build_schema()
         opts[#opts + 1] = {
             key = r.key, type = "keybind", label = r.label,
             labels = { ["zh-Hans"] = r.label },
-            description = r.desc .. " (unbound while it is " .. r.def .. ")",
-            descriptions = { ["zh-Hans"] = r.desc .. "（**值 = F24 时不启用**）" },
+            description = r.desc .. (r.bound_default == true and (" (default " .. r.def .. ")")
+                or (" (unbound while it is " .. r.def .. ")")),
+            descriptions = { ["zh-Hans"] = r.desc .. (r.bound_default == true
+                and ("（**默认就能用**: `" .. r.def .. "`；想换成别的键直接在这里改）")
+                or "（**值 = F24 时不启用**）") },
             default = r.def,
         }
         -- ★ 方向键那两条紧挨着（玩家 2026-10-08 要求）
@@ -188,7 +202,8 @@ local function build_schema()
         title = "PWProjection",
         description = "Palworld blueprint projection mod (Litematica style).",
         version = 3,
-        apply_mode = "restart_mod",
+        apply_mode = ((Options.apply_mode == "game_restart" or Options.apply_mode == "event")
+            and Options.apply_mode or "restart_mod"),   -- ★ `.117`: main.lua 从配置塞进来
         options = opts,
     }
 end
@@ -211,7 +226,9 @@ local function apply_values(vals, source)
         if v ~= nil then
             -- ★ 2026-10-08: **值 == 默认值 ⇒ 当作"未启用"（解绑）** —— 这就是"默认不绑"的实现
             --   （框架不接受 `default = "none"`，所以用"等于默认"来表达"没被启用"）
-            if tostring(v) == tostring(r.def) then
+            -- ★★ 2026-10-09 晚（`.112`）: 带 `bound_default = true` 的行**跳出**这条规则 ——
+            --   它的默认值就是"真的绑那个键"（「渲染能力探测」= `N`，首次上手必须能用）✓
+            if tostring(v) == tostring(r.def) and r.bound_default ~= true then
                 Keys.override[r.id] = "none"
             else
                 Keys.override[r.id] = v
@@ -331,7 +348,17 @@ local function write_back(values)
     for i = 1, #OPTIONAL do
         local r = OPTIONAL[i]
         local v = values[r.key]
-        if v ~= nil and tostring(v) == tostring(r.def) then v = "none" end
+        -- ★★★ 2026-10-08 晚（`.119`）**修无限重载循环** —— 原来这里**还按老规则**
+        --   把"值 == 默认值"的行写成 `none`，而 `.112` 起的**读取**那侧已经把
+        --   `bound_default = true`（默认值也算绑定，典型是 `probe = N`）当成"有效"。
+        --   两边规则不一致 ⇒ 框架每轮都认为"值又变了" ⇒ **保存后无限重载**
+        --   （实测: 改一个键，0.44 秒一轮、一轮一次重载，35 轮后游戏卡死 ✗✗；
+        --    不改内容时框架认为"没变化"⇒不重载 ⇒ 连点二三十次都没事 ✓ 与玩家观察一致）
+        --   ⇒ 现在与 `apply_values` **完全同规则**: `bound_default` 的行保留实际值 ✓
+        --   （顺带修掉 `pwpr_keys.json` 里 `key_probe=none` 与 ini `k_probe="N"` 不一致）
+        if v ~= nil and tostring(v) == tostring(r.def) and r.bound_default ~= true then
+            v = "none"
+        end
         put(r.id, v)
     end
     local enc = Json.encode(data)

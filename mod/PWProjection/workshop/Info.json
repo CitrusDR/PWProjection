@@ -1,0 +1,25 @@
+{
+  "ModName": "PWProjection - Blueprint Projection (Litematica style)",
+  "PackageName": "PWProjection",
+  "Thumbnail": "thumbnail.jpg",
+  "Version": "1.0.5",
+  "DebugMode": false,
+  "MinRevision": 100619,
+  "Author": "CitrusDR",
+  "Dependencies": [
+    "UE4SSExperimentalPW"
+  ],
+  "Tags": [
+    "UE4SS",
+    "Utilities",
+    "Gameplay"
+  ],
+  "InstallRule": [
+    {
+      "Type": "Lua",
+      "Targets": [
+        "./Scripts"
+      ]
+    }
+  ]
+}

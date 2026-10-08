@@ -450,10 +450,18 @@ function Keys.resolve(deps)
     end
 
     if n_pre_taken > 0 then
+        -- ★★★ 2026-10-08 晚（`.113` 先写成"这些键不会生效"，`.114` **修正措辞**）:
+        --   实测（玩家）: 按键**在游戏里一直能用**（改键后按一次就生效）⇒ 这句不能断言"失效" ✗
+        --   真实机制: 框架（Mod Options Framework）启动时会先装 **94 个按键捕获绑定**
+        --   （UE4SS.log: `[PalModOptions] Installed 94 event-driven key-capture bindings`），
+        --   我们的键几乎都在里面 ⇒ `IsKeyBindRegistered` 自然返回 true。
+        --   UE4SS 允许多个回调挂同一个键，所以**我们的回调照样会响** ✓
+        --   ⇒ 这行只是"存在同名键的占用"提示，**不能当故障结论**（真凶见 §75-2 的 CaptureActive）。
         notes[#notes + 1] = string.format(
-            "提示: 有 %d 个键在绑定前**已经是注册状态** —— 可能是别的 mod 占了，"
-            .. "也可能是**本次会话重载前我们自己注册的**（在 UI 里点保存会重载本模组，"
-            .. "这种情况正常、可忽略）", n_pre_taken)
+            "提示: 有 %d 个键在绑定前**已经是注册状态** —— 最常见的是**设置框架自己的按键捕获绑定**"
+            .. "（它一次注册 ~94 个键），也可能是本次重载前我们自己注册的；"
+            .. "UE4SS 允许多个回调共存，**这一行不代表按键失效** ✗", n_pre_taken)
+        Keys.n_pre_taken = n_pre_taken
     end
     Keys.map = map
     Keys.notes = notes
